@@ -52,8 +52,8 @@ export async function updateSession(request: NextRequest) {
     }
   }
 
-  // Redirect root or auth pages or dashboard to dashboard with fresh session cookies
-  if (pathname === "/" || isAuthPage || !user) {
+  // If visiting root or auth page, redirect to /dashboard
+  if (pathname === "/" || isAuthPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     const redirectResponse = NextResponse.redirect(url);
