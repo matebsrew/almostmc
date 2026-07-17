@@ -21,6 +21,7 @@ type Channel = Database["public"]["Tables"]["channels"]["Row"];
 const platformLabels: Record<Platform, string> = {
   facebook: "Facebook",
   instagram: "Instagram",
+  linkedin: "LinkedIn",
   twitter: "X / Twitter",
   telegram: "Telegram",
   bluesky: "Bluesky",
@@ -31,6 +32,7 @@ const platformLabels: Record<Platform, string> = {
 const connectablePlatforms: { id: Platform; label: string }[] = [
   { id: "instagram", label: "Instagram" },
   { id: "facebook", label: "Facebook" },
+  { id: "linkedin", label: "LinkedIn" },
   { id: "twitter", label: "X / Twitter" },
   { id: "telegram", label: "Telegram" },
   { id: "bluesky", label: "Bluesky" },

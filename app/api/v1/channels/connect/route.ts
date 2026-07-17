@@ -41,7 +41,7 @@ export async function POST(request: NextRequest) {
 
   const { platform } = await request.json();
 
-  const supported = ["facebook", "instagram", "twitter", "telegram", "bluesky", "reddit"];
+  const supported = ["facebook", "instagram", "linkedin", "twitter", "telegram", "bluesky", "reddit"];
   if (!platform || !supported.includes(platform)) {
     return NextResponse.json(
       { error: `Unsupported platform. Must be one of: ${supported.join(", ")}` },

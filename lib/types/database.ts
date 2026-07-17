@@ -9,6 +9,7 @@ export type Json =
 export type Platform =
   | "facebook"
   | "instagram"
+  | "linkedin"
   | "twitter"
   | "telegram"
   | "bluesky"

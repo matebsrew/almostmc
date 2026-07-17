@@ -44,6 +44,7 @@ interface TriggerConfig {
 const platformLabels: Record<Platform, string> = {
   facebook: "Facebook",
   instagram: "Instagram",
+  linkedin: "LinkedIn",
   twitter: "X / Twitter",
   telegram: "Telegram",
   bluesky: "Bluesky",

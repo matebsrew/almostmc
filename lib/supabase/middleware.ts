@@ -25,7 +25,7 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  const {
+  let {
     data: { user },
   } = await supabase.auth.getUser();
 
@@ -41,24 +41,22 @@ export async function updateSession(request: NextRequest) {
     return supabaseResponse;
   }
 
-  // Redirect logged-in users away from auth pages to dashboard
-  if (user && isAuthPage) {
+  // Single-Tenant Auto-Login: if not authenticated, sign in as default admin
+  if (!user) {
+    const { data: signInData } = await supabase.auth.signInWithPassword({
+      email: "heidi@zernflow.com",
+      password: "ZernFlowAdmin2026!",
+    });
+    if (signInData.user) {
+      user = signInData.user;
+    }
+  }
+
+  // Redirect root or auth pages or dashboard to dashboard with fresh session cookies
+  if (pathname === "/" || isAuthPage || !user) {
     const url = request.nextUrl.clone();
     url.pathname = "/dashboard";
     const redirectResponse = NextResponse.redirect(url);
-    // Forward any refreshed session cookies
-    supabaseResponse.cookies.getAll().forEach((cookie) => {
-      redirectResponse.cookies.set(cookie.name, cookie.value);
-    });
-    return redirectResponse;
-  }
-
-  // Redirect unauthenticated users trying to access dashboard to login
-  if (!user && isDashboard) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    const redirectResponse = NextResponse.redirect(url);
-    // Forward any refreshed session cookies
     supabaseResponse.cookies.getAll().forEach((cookie) => {
       redirectResponse.cookies.set(cookie.name, cookie.value);
     });

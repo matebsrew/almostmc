@@ -86,7 +86,7 @@ export async function POST() {
       } else {
         await supabase.from("channels").insert({
           workspace_id: workspace.id,
-          platform: account.platform as "facebook" | "instagram" | "twitter" | "telegram" | "bluesky" | "reddit",
+          platform: account.platform as "facebook" | "instagram" | "linkedin" | "twitter" | "telegram" | "bluesky" | "reddit",
           late_account_id: account._id,
           username: account.username || null,
           display_name: account.displayName || account.username || null,
