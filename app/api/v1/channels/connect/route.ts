@@ -1,58 +1,50 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 import { createZernioClient } from "@/lib/zernio-client";
 
-async function getWorkspace(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("workspace_id, workspaces(*)")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single();
-
-  if (!membership?.workspaces) return null;
-  return membership.workspaces;
-}
-
-/**
- * POST /api/v1/channels/connect
- *
- * Returns Zernio's OAuth/connect URL for the given platform.
- * Zernio handles the entire connection flow (OAuth, page selection, etc.)
- * and redirects back to our callback URL when done.
- */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const workspace = await getWorkspace(supabase);
-  if (!workspace)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) {
+    return NextResponse.json(
+      { error: resolution.error },
+      { status: resolution.status }
+    );
+  }
+  const { workspace, role } = resolution.context;
+  if (role !== "owner" && role !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
-  if (!workspace.late_api_key_encrypted) {
+  const { lateApiKey } = await getWorkspaceSecrets(workspace.id);
+  if (!lateApiKey) {
     return NextResponse.json(
       { error: "Zernio API key not configured. Go to Settings first." },
       { status: 400 }
     );
   }
 
-  const { platform } = await request.json();
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const platform =
+    body && typeof body === "object" && "platform" in body
+      ? (body as { platform?: unknown }).platform
+      : null;
 
   const supported = ["facebook", "instagram", "linkedin", "twitter", "telegram", "bluesky", "reddit"];
-  if (!platform || !supported.includes(platform)) {
+  if (typeof platform !== "string" || !supported.includes(platform)) {
     return NextResponse.json(
       { error: `Unsupported platform. Must be one of: ${supported.join(", ")}` },
       { status: 400 }
     );
   }
 
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
-
+  const zernio = createZernioClient(lateApiKey);
   try {
-    // Get profile ID (required by Zernio's connect endpoint)
     const profilesRes = await zernio.profiles.listProfiles();
     const profiles = profilesRes.data?.profiles ?? [];
     if (profiles.length === 0) {
@@ -62,26 +54,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const profileId = profiles[0]._id!;
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-    const callbackUrl = `${appUrl}/dashboard/channels/callback`;
+    const profileId = profiles[0]._id;
+    if (!profileId) {
+      return NextResponse.json({ error: "Zernio profile is invalid" }, { status: 502 });
+    }
 
-    // Zernio handles everything: OAuth, page selection, Bluesky credentials, Telegram code
-    const res = await zernio.connect.getConnectUrl({
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) {
+      return NextResponse.json({ error: "Application URL is not configured" }, { status: 500 });
+    }
+    const callbackUrl = new URL("/dashboard/channels/callback", appUrl).toString();
+    const result = await zernio.connect.getConnectUrl({
       path: { platform },
       query: { profileId, redirect_url: callbackUrl },
     });
 
-    if (!res.data?.authUrl) {
-      return NextResponse.json({ error: "Failed to get connect URL" }, { status: 500 });
+    if (!result.data?.authUrl) {
+      return NextResponse.json({ error: "Failed to get connect URL" }, { status: 502 });
     }
-
-    return NextResponse.json({ authUrl: res.data.authUrl });
+    return NextResponse.json({ authUrl: result.data.authUrl });
   } catch (error) {
     console.error("Failed to get connect URL:", error);
-    return NextResponse.json(
-      { error: `Connection failed: ${error instanceof Error ? error.message : String(error)}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Connection failed" }, { status: 502 });
   }
 }

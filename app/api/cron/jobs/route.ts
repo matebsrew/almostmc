@@ -2,24 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
 import { executeFlow } from "@/lib/flow-engine/engine";
 import type { Json } from "@/lib/types/database";
+import { isAuthorizedCronRequest } from "@/lib/security/cron-auth";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 
 /**
  * Cron job handler that processes scheduled jobs.
- * Call via Vercel Cron or external cron every 10-30 seconds.
- * GET /api/cron/jobs?key=CRON_SECRET
+ * Call via Vercel Pro or external cron at least once per minute.
  */
 export async function GET(request: NextRequest) {
-  // Simple auth via query param or header
-  const cronSecret = process.env.CRON_SECRET;
-  const providedSecret =
-    request.nextUrl.searchParams.get("key") ||
-    request.headers.get("authorization")?.replace("Bearer ", "");
-
-  if (!cronSecret || providedSecret !== cronSecret) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const supabase = await createServiceClient();
+  const staleLeaseBefore = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  await supabase
+    .from("scheduled_jobs")
+    .update({ status: "pending", locked_at: null })
+    .eq("status", "processing")
+    .or(`locked_at.is.null,locked_at.lt.${staleLeaseBefore}`);
 
   // Pick up pending jobs that are due
   const { data: jobs, error } = await supabase
@@ -39,27 +40,31 @@ export async function GET(request: NextRequest) {
 
   for (const job of jobs) {
     // Mark as processing
-    await supabase
+    const claimedAt = new Date().toISOString();
+    const { data: claimed, error: claimError } = await supabase
       .from("scheduled_jobs")
-      .update({ status: "processing", attempts: job.attempts + 1 })
+      .update({ status: "processing", attempts: job.attempts + 1, locked_at: claimedAt })
       .eq("id", job.id)
-      .eq("status", "pending"); // Optimistic lock
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (claimError || !claimed) continue;
 
     try {
       await processJob(supabase, job);
       await supabase
         .from("scheduled_jobs")
-        .update({ status: "completed" })
+        .update({ status: "completed", locked_at: null })
         .eq("id", job.id);
       processed++;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = err instanceof Error ? err.name : "Error";
       const maxAttempts = 3;
 
       if (job.attempts + 1 >= maxAttempts) {
         await supabase
           .from("scheduled_jobs")
-          .update({ status: "failed", last_error: errorMessage })
+          .update({ status: "failed", last_error: errorMessage, locked_at: null })
           .eq("id", job.id);
       } else {
         // Retry with backoff
@@ -71,6 +76,7 @@ export async function GET(request: NextRequest) {
             status: "pending",
             run_at: retryAt,
             last_error: errorMessage,
+            locked_at: null,
           })
           .eq("id", job.id);
       }
@@ -87,74 +93,86 @@ async function processJob(
 ) {
   switch (job.type) {
     case "resume_flow": {
-      const payload = job.payload as {
-        sessionId: string;
-        flowId: string;
-        channelId: string;
-        contactId: string;
-        conversationId: string;
-        workspaceId: string;
-        nodeId: string;
-        lateConversationId?: string | null;
-        lateAccountId?: string | null;
-      };
+      const payload = readJobPayload(job.payload, [
+        "sessionId", "flowId", "channelId", "contactId", "conversationId", "workspaceId", "nodeId",
+      ]);
 
       // Check if session is still active
       const { data: session } = await supabase
         .from("flow_sessions")
-        .select("*")
-        .eq("id", payload.sessionId)
+        .select("id, flow_id, channel_id, contact_id, status")
+        .eq("id", payload.sessionId!)
+        .eq("flow_id", payload.flowId!)
+        .eq("channel_id", payload.channelId!)
+        .eq("contact_id", payload.contactId!)
         .eq("status", "active")
-        .single();
+        .maybeSingle();
 
       if (!session) return; // Session was cancelled/completed
 
+      const [flowResult, channelResult, contactResult, conversationResult] = await Promise.all([
+        supabase.from("flows").select("id, workspace_id").eq("id", payload.flowId!).maybeSingle(),
+        supabase.from("channels").select("id, workspace_id, late_account_id").eq("id", payload.channelId!).maybeSingle(),
+        supabase.from("contacts").select("id, workspace_id").eq("id", payload.contactId!).maybeSingle(),
+        supabase.from("conversations").select("id, workspace_id, channel_id, contact_id, late_conversation_id")
+          .eq("id", payload.conversationId!).maybeSingle(),
+      ]);
+      const flow = flowResult.data;
+      const channel = channelResult.data;
+      const contact = contactResult.data;
+      const conversation = conversationResult.data;
+      if (
+        !flow || !channel || !contact || !conversation ||
+        flow.workspace_id !== payload.workspaceId ||
+        channel.workspace_id !== payload.workspaceId ||
+        contact.workspace_id !== payload.workspaceId ||
+        conversation.workspace_id !== payload.workspaceId ||
+        conversation.channel_id !== channel.id || conversation.contact_id !== contact.id
+      ) return;
+
       await executeFlow(supabase, {
         triggerId: "",
-        flowId: payload.flowId,
-        channelId: payload.channelId,
-        contactId: payload.contactId,
-        conversationId: payload.conversationId,
-        workspaceId: payload.workspaceId,
-        lateConversationId: payload.lateConversationId || undefined,
-        lateAccountId: payload.lateAccountId || undefined,
+        flowId: payload.flowId!,
+        channelId: payload.channelId!,
+        contactId: payload.contactId!,
+        conversationId: payload.conversationId!,
+        workspaceId: payload.workspaceId!,
+        lateConversationId: conversation.late_conversation_id || undefined,
+        lateAccountId: channel.late_account_id || undefined,
         incomingMessage: {},
       });
       break;
     }
 
     case "send_broadcast": {
-      const payload = job.payload as {
-        broadcastId: string;
-        recipientId: string;
-      };
+      const payload = readJobPayload(job.payload, ["broadcastId", "recipientId"]);
 
-      // Process individual broadcast recipient
       const { data: recipient } = await supabase
         .from("broadcast_recipients")
-        .select("*, contacts(*), channels(*), broadcasts(*)")
-        .eq("id", payload.recipientId)
-        .single();
+        .select("id, broadcast_id, contact_id, channel_id, status")
+        .eq("id", payload.recipientId!)
+        .maybeSingle();
 
-      if (!recipient || recipient.status !== "pending") return;
+      if (!recipient || recipient.status !== "pending" || recipient.broadcast_id !== payload.broadcastId) return;
 
-      // Get workspace API key
-      const broadcast = recipient.broadcasts as { workspace_id: string } | null;
-      if (!broadcast) return;
+      const [broadcastResult, contactResult, channelResult] = await Promise.all([
+        supabase.from("broadcasts").select("id, workspace_id, message_content").eq("id", payload.broadcastId!).maybeSingle(),
+        supabase.from("contacts").select("id, workspace_id").eq("id", recipient.contact_id).maybeSingle(),
+        supabase.from("channels").select("id, workspace_id, late_account_id").eq("id", recipient.channel_id).maybeSingle(),
+      ]);
+      const broadcast = broadcastResult.data;
+      const contact = contactResult.data;
+      const channel = channelResult.data;
+      if (!broadcast || !contact || !channel ||
+        broadcast.workspace_id !== contact.workspace_id ||
+        broadcast.workspace_id !== channel.workspace_id) return;
 
-      const { data: workspace } = await supabase
-        .from("workspaces")
-        .select("late_api_key_encrypted")
-        .eq("id", broadcast.workspace_id)
-        .single();
-
-      if (!workspace?.late_api_key_encrypted) return;
+      const { lateApiKey } = await getWorkspaceSecrets(broadcast.workspace_id);
+      if (!lateApiKey) return;
 
       const { createZernioClient } = await import("@/lib/zernio-client");
-      const zernio = createZernioClient(workspace.late_api_key_encrypted);
-
-      const channel = recipient.channels as { late_account_id: string } | null;
-      if (!channel) return;
+      const zernio = createZernioClient(lateApiKey);
+      if (!channel.late_account_id) return;
 
       // Get the conversation for this contact+channel (need late_conversation_id)
       const { data: conv } = await supabase
@@ -162,17 +180,26 @@ async function processJob(
         .select("late_conversation_id")
         .eq("contact_id", recipient.contact_id)
         .eq("channel_id", recipient.channel_id)
+        .eq("workspace_id", broadcast.workspace_id)
         .single();
 
       if (!conv?.late_conversation_id) return;
 
-      const broadcastData = recipient.broadcasts as { message_content: { text?: string } } | null;
-      const messageContent = broadcastData?.message_content;
+      const messageContent = broadcast.message_content as { text?: string } | null;
+      const outgoingText = messageContent?.text?.trim();
+      if (!outgoingText || outgoingText.length > 5000) {
+        await supabase
+          .from("broadcast_recipients")
+          .update({ status: "failed", error_message: "Broadcast message content is invalid" })
+          .eq("id", payload.recipientId);
+        await supabase.rpc("increment_broadcast_failed", { b_id: payload.broadcastId });
+        return;
+      }
 
       try {
         await zernio.messages.sendInboxMessage({
           path: { conversationId: conv.late_conversation_id },
-          body: { accountId: channel.late_account_id, message: messageContent?.text || "" },
+          body: { accountId: channel.late_account_id, message: outgoingText },
         });
 
         await supabase
@@ -189,7 +216,7 @@ async function processJob(
           .from("broadcast_recipients")
           .update({
             status: "failed",
-            error_message: err instanceof Error ? err.message : String(err),
+            error_message: "Zernio message delivery failed",
           })
           .eq("id", payload.recipientId);
 
@@ -216,6 +243,22 @@ async function processJob(
     }
 
     default:
-      console.warn(`Unknown job type: ${job.type}`);
+      throw new Error(`Unsupported scheduled job type: ${job.type}`);
   }
+}
+
+function readJobPayload(payload: Json, required: string[]): Record<string, string> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Scheduled job payload must be an object");
+  }
+  const record = payload as Record<string, Json>;
+  const output: Record<string, string> = {};
+  for (const key of required) {
+    const value = record[key];
+    if (typeof value !== "string" || value.length === 0 || value.length > 255) {
+      throw new Error(`Scheduled job field is invalid: ${key}`);
+    }
+    output[key] = value;
+  }
+  return output;
 }

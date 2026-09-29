@@ -20,7 +20,7 @@ export default async function GrowthPage() {
   ] = await Promise.all([
     supabase
       .from("channels")
-      .select("*")
+      .select("id, platform, late_account_id, username, display_name")
       .eq("workspace_id", workspace.id)
       .eq("is_active", true)
       .order("created_at", { ascending: false }),

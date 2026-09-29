@@ -2,11 +2,15 @@
   "crons": [
     {
       "path": "/api/cron/jobs",
-      "schedule": "0 0 * * *"
+      "schedule": "* * * * *"
     },
     {
       "path": "/api/cron/sequences",
-      "schedule": "0 0 * * *"
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/webhooks",
+      "schedule": "* * * * *"
     }
   ]
 }

@@ -17,7 +17,10 @@ import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
 import type { Database, Json, Platform } from "@/lib/types/database";
 
-type Channel = Database["public"]["Tables"]["channels"]["Row"];
+type Channel = Pick<
+  Database["public"]["Tables"]["channels"]["Row"],
+  "id" | "platform" | "late_account_id" | "username" | "display_name"
+>;
 type CommentLog = Database["public"]["Tables"]["comment_logs"]["Row"];
 
 interface TriggerWithFlow {

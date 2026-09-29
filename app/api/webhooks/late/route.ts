@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase/server";
-import { executeFlow } from "@/lib/flow-engine/engine";
-import { matchTrigger } from "@/lib/flow-engine/trigger-matcher";
+import type { Json } from "@/lib/types/database";
 import crypto from "crypto";
+import { getWebhookSecret } from "@/lib/security/workspace-secrets";
 
 // ── Zernio API webhook payload ───────────────────────────────────────────────
 
 interface WebhookPayload {
+  id: string;
   event: string;
   message: {
     id: string;
@@ -64,278 +65,120 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleWebhook(request: NextRequest) {
-  const body = await request.text();
-  const signature = request.headers.get("x-late-signature");
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > 262_144) {
+    return NextResponse.json({ error: "Request body is too large" }, { status: 413 });
+  }
+
+  let body: string;
+  try {
+    body = await readBodyBounded(request, 262_144);
+  } catch {
+    return NextResponse.json({ error: "Request body is too large or invalid" }, { status: 413 });
+  }
 
   let payload: WebhookPayload;
   try {
-    payload = JSON.parse(body);
+    payload = JSON.parse(body) as WebhookPayload;
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Only handle message.received events
+  if (!payload || typeof payload !== "object" || typeof payload.event !== "string") {
+    return NextResponse.json({ error: "Invalid webhook payload" }, { status: 400 });
+  }
+
+  // The endpoint only processes inbound messages. Unsupported events have no side effects.
   if (payload.event !== "message.received") {
     return NextResponse.json({ ok: true, skipped: true });
   }
 
-  const { message: msg, conversation: conv, account, metadata } = payload;
+  const { message: msg, conversation: conv, account } = payload;
+  if (
+    !msg || typeof msg.id !== "string" || msg.id.length > 255 ||
+    !["inbound", "outbound"].includes(msg.direction) ||
+    (msg.text !== null && typeof msg.text !== "string") ||
+    !msg.sender || typeof msg.sender.id !== "string" || msg.sender.id.length > 512 ||
+    !conv || typeof conv.id !== "string" || conv.id.length > 512 ||
+    !account || typeof account.id !== "string" || account.id.length > 255
+  ) {
+    return NextResponse.json({ error: "Invalid message event" }, { status: 400 });
+  }
 
-  // Ignore outbound messages (sent by the bot itself) to prevent loops
-  if (msg.direction === "outbound") {
-    return NextResponse.json({ ok: true, skipped: true });
+  const eventId = typeof payload.id === "string" ? payload.id.trim() : "";
+  const eventHeader = request.headers.get("x-zernio-event-id") ?? request.headers.get("x-late-event-id");
+  if (!eventId || eventId.length > 255 || (eventHeader && eventHeader !== eventId)) {
+    return NextResponse.json({ error: "Invalid webhook event id" }, { status: 400 });
   }
 
   const supabase = await createServiceClient();
 
   // Look up channel by late_account_id
-  const { data: channel } = await supabase
+  const { data: channel, error: channelError } = await supabase
     .from("channels")
-    .select("*")
+    .select("id, workspace_id, platform, late_account_id")
     .eq("late_account_id", account.id)
     .eq("is_active", true)
     .single();
 
-  if (!channel) {
+  if (channelError || !channel) {
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
   }
 
-  // Prevent loops: if the sender is another connected account in this
-  // workspace, skip. This happens when both sides of a DM conversation
-  // are connected (e.g. during testing).
-  if (msg.sender.username) {
-    const { data: senderChannel } = await supabase
-      .from("channels")
-      .select("id")
-      .eq("workspace_id", channel.workspace_id)
-      .eq("username", msg.sender.username)
-      .eq("is_active", true)
-      .maybeSingle();
-
-    if (senderChannel) {
-      return NextResponse.json({ ok: true, skipped: true, reason: "sender_is_own_account" });
-    }
+  const signature = request.headers.get("x-zernio-signature") ?? request.headers.get("x-late-signature");
+  let webhookSecret: string | null;
+  try {
+    webhookSecret = await getWebhookSecret(channel.id, channel.workspace_id);
+  } catch {
+    return NextResponse.json({ error: "Webhook signature verification is unavailable" }, { status: 503 });
+  }
+  if (!webhookSecret || !signature || !/^[a-f0-9]{64}$/i.test(signature)) {
+    return NextResponse.json({ error: "Webhook signature is not valid" }, { status: 401 });
+  }
+  const expectedSignature = crypto.createHmac("sha256", webhookSecret).update(body).digest();
+  const receivedSignature = Buffer.from(signature, "hex");
+  if (receivedSignature.length !== expectedSignature.length || !crypto.timingSafeEqual(receivedSignature, expectedSignature)) {
+    return NextResponse.json({ error: "Webhook signature is not valid" }, { status: 401 });
   }
 
-  // Verify HMAC-SHA256 signature
-  if (channel.webhook_secret) {
-    if (!signature) {
-      return NextResponse.json(
-        { error: "Missing signature" },
-        { status: 401 }
-      );
-    }
-
-    const expected = crypto
-      .createHmac("sha256", channel.webhook_secret)
-      .update(body)
-      .digest("hex");
-
-    if (
-      !crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expected)
-      )
-    ) {
-      return NextResponse.json(
-        { error: "Invalid signature" },
-        { status: 401 }
-      );
-    }
+  // Ignore signed outbound messages to prevent loops.
+  if (msg.direction === "outbound") {
+    return NextResponse.json({ ok: true, skipped: true });
   }
 
-  // ── Upsert contact ───────────────────────────────────────────────────────
-
-  const senderId = msg.sender.id;
-  const senderName = msg.sender.name || msg.sender.username || senderId;
-
-  let contactId: string;
-  const { data: existingContactChannel } = await supabase
-    .from("contact_channels")
-    .select("contact_id")
-    .eq("channel_id", channel.id)
-    .eq("platform_sender_id", senderId)
-    .single();
-
-  if (existingContactChannel) {
-    contactId = existingContactChannel.contact_id;
-    await supabase
-      .from("contacts")
-      .update({ last_interaction_at: new Date().toISOString() })
-      .eq("id", contactId);
-  } else {
-    const { data: newContact } = await supabase
-      .from("contacts")
-      .insert({
-        workspace_id: channel.workspace_id,
-        display_name: senderName,
-        avatar_url: msg.sender.picture || null,
-        last_interaction_at: new Date().toISOString(),
-      })
-      .select("id")
-      .single();
-
-    if (!newContact) {
-      return NextResponse.json(
-        { error: "Failed to create contact" },
-        { status: 500 }
-      );
-    }
-
-    contactId = newContact.id;
-
-    await supabase.from("contact_channels").insert({
-      contact_id: contactId,
-      channel_id: channel.id,
-      platform_sender_id: senderId,
-      platform_username: msg.sender.username || null,
-    });
-
-    await supabase.from("analytics_events").insert({
-      workspace_id: channel.workspace_id,
-      contact_id: contactId,
-      event_type: "contact_created",
-    });
-  }
-
-  // ── Upsert conversation ──────────────────────────────────────────────────
-
-  const messagePreview = (msg.text || "").slice(0, 100);
-
-  const { data: conversation } = await supabase
-    .from("conversations")
-    .upsert(
-      {
-        workspace_id: channel.workspace_id,
-        channel_id: channel.id,
-        contact_id: contactId,
-        platform: channel.platform,
-        late_conversation_id: conv.id,
-        status: "open",
-        last_message_at: new Date().toISOString(),
-        last_message_preview: messagePreview,
-        unread_count: 1,
-      },
-      { onConflict: "channel_id,contact_id" }
-    )
-    .select("id, is_automation_paused")
-    .single();
-
-  if (!conversation) {
-    return NextResponse.json(
-      { error: "Failed to upsert conversation" },
-      { status: 500 }
-    );
-  }
-
-  if (existingContactChannel) {
-    await supabase
-      .rpc("increment_unread", {
-        conv_id: conversation.id,
-        preview: messagePreview,
-      })
-      .then(() => {});
-  }
-
-  // Messages are stored by Zernio (source of truth) — no local insert needed.
-
-  // ── Flow engine ───────────────────────────────────────────────────────────
-
-  if (!conversation.is_automation_paused) {
-    const incomingMessage = {
-      text: msg.text || undefined,
-      postbackPayload: metadata?.postbackPayload || undefined,
-      quickReplyPayload: metadata?.quickReplyPayload || undefined,
-      callbackData: metadata?.callbackData || undefined,
-      sender: {
-        id: msg.sender.id,
-        name: msg.sender.name,
-        username: msg.sender.username || undefined,
-      },
-    };
-
-    const handled = await handleGlobalKeywords(
-      supabase,
-      channel.workspace_id,
-      contactId,
-      msg.text || undefined
-    );
-
-    if (!handled) {
-      const trigger = await matchTrigger(
-        supabase,
-        channel.id,
-        conversation.id,
-        incomingMessage
-      );
-      if (trigger) {
-        try {
-          await executeFlow(supabase, {
-            triggerId: trigger.id,
-            flowId: trigger.flow_id,
-            channelId: channel.id,
-            contactId,
-            conversationId: conversation.id,
-            workspaceId: channel.workspace_id,
-            incomingMessage,
-            lateConversationId: conv.id,
-            lateAccountId: account.id,
-          });
-        } catch (err) {
-          console.error("Flow execution error:", err);
-        }
-      }
-    }
-  }
-
-  return NextResponse.json({ ok: true });
+  const { data: claimed, error: claimError } = await supabase.rpc("claim_webhook_event", {
+    p_channel_id: channel.id,
+    p_event_id: eventId,
+    p_payload: payload as unknown as Json,
+  });
+  if (claimError) return NextResponse.json({ error: "Webhook event could not be claimed" }, { status: 503 });
+  return NextResponse.json(
+    { ok: true, duplicate: !claimed, queued: Boolean(claimed) },
+    { status: 202 }
+  );
 }
 
-// ── Global keywords ─────────────────────────────────────────────────────────
-
-async function handleGlobalKeywords(
-  supabase: Awaited<ReturnType<typeof createServiceClient>>,
-  workspaceId: string,
-  contactId: string,
-  text: string | undefined
-): Promise<boolean> {
-  if (!text) return false;
-
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("global_keywords")
-    .eq("id", workspaceId)
-    .single();
-
-  if (!workspace?.global_keywords) return false;
-
-  const keywords = workspace.global_keywords as Array<{
-    keyword: string;
-    action?: string;
-    flowId?: string;
-  }>;
-
-  const normalizedText = text.toLowerCase().trim();
-
-  for (const kw of keywords) {
-    if (normalizedText === kw.keyword.toLowerCase()) {
-      if (kw.action === "unsubscribe") {
-        await supabase
-          .from("contacts")
-          .update({ is_subscribed: false })
-          .eq("id", contactId);
-        return true;
-      }
-      if (kw.action === "subscribe") {
-        await supabase
-          .from("contacts")
-          .update({ is_subscribed: true })
-          .eq("id", contactId);
-        return true;
-      }
-      return false;
+async function readBodyBounded(request: NextRequest, maxBytes: number): Promise<string> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new Error("Body too large");
     }
+    chunks.push(value);
   }
 
-  return false;
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }

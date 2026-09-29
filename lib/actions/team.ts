@@ -6,34 +6,28 @@ import { getWorkspace } from "@/lib/workspace";
 export async function inviteTeamMember(
   workspaceId: string,
   email: string,
-  role: string
+  requestedRole: string
 ) {
-  const { workspace, user, supabase } = await getWorkspace();
+  const { workspace, user, supabase, role: currentRole } = await getWorkspace();
 
   if (workspace.id !== workspaceId) {
     return { error: "Workspace mismatch" };
   }
 
-  // Validate caller is owner
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("role")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", user.id)
-    .single();
-
-  if (membership?.role !== "owner") {
-    return { error: "Only workspace owners can invite members" };
-  }
+  if (currentRole !== "owner" && currentRole !== "admin") return { error: "Only workspace owners and admins can invite members" };
 
   const trimmedEmail = email.trim().toLowerCase();
   if (!trimmedEmail || !trimmedEmail.includes("@")) {
     return { error: "A valid email address is required" };
   }
 
-  const validRoles = ["member", "admin"];
-  if (!validRoles.includes(role)) {
-    return { error: "Invalid role. Must be member or admin." };
+  const role = requestedRole === "admin"
+    ? "admin"
+    : requestedRole === "agent"
+      ? "agent"
+      : null;
+  if (!role) {
+    return { error: "Invalid role. Must be agent or admin." };
   }
 
   // Check if this email is already a member
@@ -81,23 +75,22 @@ export async function removeTeamMember(
   workspaceId: string,
   userId: string
 ) {
-  const { workspace, user, supabase } = await getWorkspace();
+  const { workspace, user, supabase, role: currentRole } = await getWorkspace();
 
   if (workspace.id !== workspaceId) {
     return { error: "Workspace mismatch" };
   }
+  if (currentRole !== "owner" && currentRole !== "admin") return { error: "Only workspace owners and admins can remove members" };
 
-  // Validate caller is owner
-  const { data: membership } = await supabase
+  const serviceClient = await createServiceClient();
+  const { data: targetMembership } = await serviceClient
     .from("workspace_members")
     .select("role")
     .eq("workspace_id", workspaceId)
-    .eq("user_id", user.id)
-    .single();
-
-  if (membership?.role !== "owner") {
-    return { error: "Only workspace owners can remove members" };
-  }
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!targetMembership) return { error: "Member not found" };
+  if (currentRole === "admin" && targetMembership.role === "owner") return { error: "Only an owner can remove another owner" };
 
   // Can't remove yourself
   if (userId === user.id) {
@@ -125,103 +118,24 @@ export async function acceptInvite(inviteId: string) {
 
   if (!user) return { error: "Not authenticated" };
 
-  // Use service client to bypass RLS (the user is not a workspace member yet)
   const serviceClient = await createServiceClient();
-
-  // Fetch the invite
-  const { data: invite, error: fetchError } = await serviceClient
-    .from("workspace_invites")
-    .select("*")
-    .eq("id", inviteId)
-    .single();
-
-  if (fetchError || !invite) {
-    return { error: "Invite not found" };
-  }
-
-  if (invite.status !== "pending") {
-    return { error: "This invite is no longer valid" };
-  }
-
-  if (new Date(invite.expires_at) < new Date()) {
-    return { error: "This invite has expired" };
-  }
-
-  // Verify the invite email matches the current user's email
-  if (invite.email !== user.email) {
-    return { error: "This invite was sent to a different email address" };
-  }
-
-  // Check if user is already a member
-  const { data: existingMembership } = await serviceClient
-    .from("workspace_members")
-    .select("workspace_id")
-    .eq("workspace_id", invite.workspace_id)
-    .eq("user_id", user.id)
-    .single();
-
-  if (existingMembership) {
-    // Already a member, just mark the invite as accepted
-    await serviceClient
-      .from("workspace_invites")
-      .update({ status: "accepted" })
-      .eq("id", inviteId);
-
-    return { ok: true, workspaceId: invite.workspace_id, alreadyMember: true };
-  }
-
-  // Insert into workspace_members (service client bypasses owner-only RLS)
-  const { error: insertError } = await serviceClient
-    .from("workspace_members")
-    .insert({
-      workspace_id: invite.workspace_id,
-      user_id: user.id,
-      role: invite.role,
-    });
-
-  if (insertError) {
-    return { error: insertError.message };
-  }
-
-  // Update invite status to accepted
-  await serviceClient
-    .from("workspace_invites")
-    .update({ status: "accepted" })
-    .eq("id", inviteId);
-
-  return { ok: true, workspaceId: invite.workspace_id };
+  const { data: workspaceId, error } = await serviceClient.rpc("accept_workspace_invite", {
+    p_invite_id: inviteId,
+    p_user_id: user.id,
+  });
+  if (error || !workspaceId) return { error: "Invite is invalid, expired, or belongs to another email" };
+  return { ok: true, workspaceId };
 }
 
 export async function revokeInvite(inviteId: string) {
-  const { user, supabase } = await getWorkspace();
-
-  // Fetch the invite to get workspace_id
-  const { data: invite, error: fetchError } = await supabase
-    .from("workspace_invites")
-    .select("workspace_id")
-    .eq("id", inviteId)
-    .single();
-
-  if (fetchError || !invite) {
-    return { error: "Invite not found" };
-  }
-
-  // Validate caller is owner
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("role")
-    .eq("workspace_id", invite.workspace_id)
-    .eq("user_id", user.id)
-    .single();
-
-  if (membership?.role !== "owner") {
-    return { error: "Only workspace owners can revoke invites" };
-  }
+  const { workspace, role, supabase } = await getWorkspace();
+  if (role !== "owner" && role !== "admin") return { error: "Only workspace owners and admins can revoke invites" };
 
   const { error: deleteError } = await supabase
     .from("workspace_invites")
     .delete()
-    .eq("id", inviteId);
+    .eq("id", inviteId)
+    .eq("workspace_id", workspace.id);
 
   if (deleteError) {
     return { error: deleteError.message };

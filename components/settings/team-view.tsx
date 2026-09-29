@@ -46,13 +46,13 @@ interface PendingInvite {
 const roleIcons: Record<string, React.ReactNode> = {
   owner: <Crown className="h-3 w-3" />,
   admin: <Shield className="h-3 w-3" />,
-  member: <User className="h-3 w-3" />,
+  agent: <User className="h-3 w-3" />,
 };
 
 const roleStyles: Record<string, string> = {
   owner: "bg-amber-100 text-amber-700",
   admin: "bg-blue-100 text-blue-700",
-  member: "bg-gray-100 text-gray-600",
+  agent: "bg-gray-100 text-gray-600",
 };
 
 export function TeamView({
@@ -72,13 +72,14 @@ export function TeamView({
 }) {
   const router = useRouter();
   const isOwner = currentUserRole === "owner";
+  const canManageTeam = isOwner || currentUserRole === "admin";
 
   const [members, setMembers] = useState(initialMembers);
   const [invites, setInvites] = useState(initialInvites);
 
   // Invite form
   const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState("member");
+  const [inviteRole, setInviteRole] = useState("agent");
   const [inviting, setInviting] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteSuccess, setInviteSuccess] = useState(false);
@@ -104,7 +105,7 @@ export function TeamView({
     } else if (result.invite) {
       setInvites((prev) => [result.invite as PendingInvite, ...prev]);
       setInviteEmail("");
-      setInviteRole("member");
+      setInviteRole("agent");
       setInviteSuccess(true);
       setTimeout(() => setInviteSuccess(false), 3000);
     }
@@ -198,10 +199,10 @@ export function TeamView({
                     <span
                       className={cn(
                         "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
-                        roleStyles[member.role] ?? roleStyles.member
+                        roleStyles[member.role] ?? roleStyles.agent
                       )}
                     >
-                      {roleIcons[member.role] ?? roleIcons.member}
+                      {roleIcons[member.role] ?? roleIcons.agent}
                       {member.role}
                     </span>
 
@@ -214,7 +215,7 @@ export function TeamView({
                       })}
                     </span>
 
-                    {isOwner && member.userId !== currentUserId && (
+                    {canManageTeam && member.userId !== currentUserId && (isOwner || member.role !== "owner") && (
                       <button
                         onClick={() =>
                           setConfirmRemove({ userId: member.userId, name: member.name })
@@ -237,7 +238,7 @@ export function TeamView({
           </section>
 
           {/* Invite section (owners only) */}
-          {isOwner && (
+          {canManageTeam && (
             <>
               <hr className="border-border" />
 
@@ -267,7 +268,7 @@ export function TeamView({
                     onChange={(e) => setInviteRole(e.target.value)}
                     className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
-                    <option value="member">Member</option>
+                    <option value="agent">Agent</option>
                     <option value="admin">Admin</option>
                   </select>
                   <button
@@ -333,10 +334,10 @@ export function TeamView({
                               <span
                                 className={cn(
                                   "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium capitalize",
-                                  roleStyles[invite.role] ?? roleStyles.member
+                                  roleStyles[invite.role] ?? roleStyles.agent
                                 )}
                               >
-                                {roleIcons[invite.role] ?? roleIcons.member}
+                                {roleIcons[invite.role] ?? roleIcons.agent}
                                 {invite.role}
                               </span>
                               {isExpired ? (
@@ -358,7 +359,7 @@ export function TeamView({
                           </div>
                         </div>
 
-                        {isOwner && (
+                        {canManageTeam && (
                           <button
                             onClick={() => setConfirmRevoke(invite.id)}
                             disabled={revokingId === invite.id}

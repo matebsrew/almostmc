@@ -1,169 +1,139 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 import { createZernioClient } from "@/lib/zernio-client";
 
-/**
- * GET /api/v1/messages?conversationId=...
- *
- * Fetches messages from the Zernio API (source of truth) instead of a local mirror.
- */
+function authFailure(status: number, error: string) {
+  return NextResponse.json({ error }, { status });
+}
+
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) return authFailure(resolution.status, resolution.error);
+  const { workspace, supabase } = resolution.context;
 
   const conversationId = request.nextUrl.searchParams.get("conversationId");
-  if (!conversationId) {
-    return NextResponse.json({ error: "conversationId required" }, { status: 400 });
+  if (!conversationId || conversationId.length > 100) {
+    return NextResponse.json({ error: "conversationId is invalid" }, { status: 400 });
   }
 
-  // Look up the Zernio conversation ID and workspace API key
   const { data: conversation } = await supabase
     .from("conversations")
     .select("late_conversation_id, workspace_id, channels(late_account_id)")
     .eq("id", conversationId)
-    .single();
-
+    .eq("workspace_id", workspace.id)
+    .maybeSingle();
   if (!conversation?.late_conversation_id) {
-    return NextResponse.json({ error: "Conversation not found or missing Zernio ID" }, { status: 404 });
+    return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
   }
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", conversation.workspace_id)
-    .single();
-
-  if (!workspace?.late_api_key_encrypted) {
-    return NextResponse.json({ error: "API key not configured" }, { status: 400 });
-  }
+  const { lateApiKey } = await getWorkspaceSecrets(workspace.id);
+  if (!lateApiKey) return NextResponse.json({ error: "API key not configured" }, { status: 400 });
 
   const channel = conversation.channels as { late_account_id: string } | null;
   if (!channel?.late_account_id) {
     return NextResponse.json({ error: "Channel not found" }, { status: 404 });
   }
 
-  // Fetch messages from Zernio API
   try {
-    const zernio = createZernioClient(workspace.late_api_key_encrypted);
-    const res = await zernio.messages.getInboxConversationMessages({
+    const zernio = createZernioClient(lateApiKey);
+    const result = await zernio.messages.getInboxConversationMessages({
       path: { conversationId: conversation.late_conversation_id },
       query: { accountId: channel.late_account_id },
     });
-
-    const zernioMessages = (res.data as any)?.data ?? [];
-
-    // Map Zernio messages to the shape the inbox UI expects
-    const messages = zernioMessages.map((m: any) => ({
-      id: m.id,
-      conversation_id: conversationId,
-      direction: m.direction === "outbound" ? "outbound" : "inbound",
-      text: m.text ?? m.message ?? null,
-      attachments: m.attachments?.length ? m.attachments : null,
-      quick_reply_payload: null,
-      postback_payload: null,
-      callback_data: null,
-      platform_message_id: m.platformMessageId ?? null,
-      sent_by_flow_id: null,
-      sent_by_node_id: null,
-      sent_by_user_id: null,
-      status: "sent",
-      created_at: m.sentAt ?? m.createdAt ?? new Date().toISOString(),
-    }));
-
+    const sourceMessages = (result.data as { data?: unknown[] })?.data ?? [];
+    const messages = sourceMessages.map((raw) => {
+      const message = raw as Record<string, unknown>;
+      return {
+        id: message.id,
+        conversation_id: conversationId,
+        direction: message.direction === "outbound" ? "outbound" : "inbound",
+        text: message.text ?? message.message ?? null,
+        attachments: Array.isArray(message.attachments) ? message.attachments : null,
+        quick_reply_payload: null,
+        postback_payload: null,
+        callback_data: null,
+        platform_message_id: message.platformMessageId ?? null,
+        sent_by_flow_id: null,
+        sent_by_node_id: null,
+        sent_by_user_id: null,
+        status: "sent",
+        created_at: message.sentAt ?? message.createdAt ?? new Date().toISOString(),
+      };
+    });
     return NextResponse.json(messages);
   } catch (error) {
     console.error("Failed to fetch messages from Zernio API:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch messages" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to fetch messages" }, { status: 502 });
   }
 }
 
-/**
- * POST /api/v1/messages
- *
- * Sends a message via Zernio API. No local message storage — Zernio is the source of truth.
- */
 export async function POST(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) return authFailure(resolution.status, resolution.error);
+  const { workspace, supabase, user } = resolution.context;
 
-  const body = await request.json();
-  const { conversationId, text } = body;
-
-  if (!conversationId || !text) {
-    return NextResponse.json(
-      { error: "conversationId and text required" },
-      { status: 400 }
-    );
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > 12_288) {
+    return NextResponse.json({ error: "Request body is too large" }, { status: 413 });
+  }
+  let body: unknown;
+  try {
+    const raw = await request.text();
+    if (raw.length > 12_288) return NextResponse.json({ error: "Request body is too large" }, { status: 413 });
+    body = JSON.parse(raw);
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+  const conversationId =
+    body && typeof body === "object" && "conversationId" in body && typeof body.conversationId === "string"
+      ? body.conversationId
+      : "";
+  const messageText =
+    body && typeof body === "object" && "text" in body && typeof body.text === "string"
+      ? body.text.trim()
+      : "";
+  if (!conversationId || conversationId.length > 100 || !messageText || messageText.length > 5000) {
+    return NextResponse.json({ error: "conversationId and text are required" }, { status: 400 });
   }
 
-  // Get conversation with channel info
   const { data: conversation } = await supabase
     .from("conversations")
-    .select("*, channels(*)")
+    .select("id, workspace_id, late_conversation_id, channels(late_account_id)")
     .eq("id", conversationId)
-    .single();
-
-  if (!conversation) {
-    return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
-  }
-
+    .eq("workspace_id", workspace.id)
+    .maybeSingle();
+  if (!conversation) return NextResponse.json({ error: "Conversation not found" }, { status: 404 });
   if (!conversation.late_conversation_id) {
-    return NextResponse.json(
-      { error: "No Zernio conversation ID linked to this conversation" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "No Zernio conversation ID linked" }, { status: 400 });
   }
-
   const channel = conversation.channels as { late_account_id: string } | null;
-  if (!channel?.late_account_id) {
-    return NextResponse.json({ error: "Channel not found or missing Zernio account ID" }, { status: 404 });
-  }
+  if (!channel?.late_account_id) return NextResponse.json({ error: "Channel not found" }, { status: 404 });
 
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", conversation.workspace_id)
-    .single();
+  const { lateApiKey } = await getWorkspaceSecrets(workspace.id);
+  if (!lateApiKey) return NextResponse.json({ error: "API key not configured" }, { status: 400 });
 
-  if (!workspace?.late_api_key_encrypted) {
-    return NextResponse.json({ error: "API key not configured" }, { status: 400 });
-  }
-
-  // Send via Zernio SDK — Zernio stores the message, no local insert needed
   try {
-    const zernio = createZernioClient(workspace.late_api_key_encrypted);
-    const res = await zernio.messages.sendInboxMessage({
+    const zernio = createZernioClient(lateApiKey);
+    const result = await zernio.messages.sendInboxMessage({
       path: { conversationId: conversation.late_conversation_id },
-      body: { accountId: channel.late_account_id, message: text },
+      body: { accountId: channel.late_account_id, message: messageText },
     });
+    const messageId = (result.data as { data?: { messageId?: string } })?.data?.messageId ?? null;
+    const createdAt = new Date().toISOString();
 
-    const messageId = (res.data as any)?.data?.messageId ?? null;
-
-    // Update conversation's last message info (ZernFlow-specific metadata)
     await supabase
       .from("conversations")
-      .update({
-        last_message_at: new Date().toISOString(),
-        last_message_preview: text.slice(0, 100),
-      })
-      .eq("id", conversationId);
+      .update({ last_message_at: createdAt, last_message_preview: messageText.slice(0, 100) })
+      .eq("id", conversationId)
+      .eq("workspace_id", workspace.id);
 
-    // Return a message-shaped response for the UI's optimistic update
     return NextResponse.json(
       {
         id: messageId ?? `sent-${Date.now()}`,
         conversation_id: conversationId,
         direction: "outbound",
-        text,
+        text: messageText,
         attachments: null,
         quick_reply_payload: null,
         postback_payload: null,
@@ -173,15 +143,12 @@ export async function POST(request: NextRequest) {
         sent_by_node_id: null,
         sent_by_user_id: user.id,
         status: "sent",
-        created_at: new Date().toISOString(),
+        created_at: createdAt,
       },
       { status: 201 }
     );
   } catch (error) {
     console.error("Failed to send message via Zernio API:", error);
-    return NextResponse.json(
-      { error: `Failed to send message: ${error}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Failed to send message" }, { status: 502 });
   }
 }

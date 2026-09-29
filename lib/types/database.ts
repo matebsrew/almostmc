@@ -78,8 +78,6 @@ export interface Database {
           id: string;
           name: string;
           slug: string;
-          late_api_key_encrypted: string | null;
-          ai_api_key: string | null;
           ai_provider: string;
           global_keywords: Json | null;
           created_at: string;
@@ -89,8 +87,6 @@ export interface Database {
           id?: string;
           name: string;
           slug: string;
-          late_api_key_encrypted?: string | null;
-          ai_api_key?: string | null;
           ai_provider?: string;
           global_keywords?: Json | null;
           created_at?: string;
@@ -100,8 +96,6 @@ export interface Database {
           id?: string;
           name?: string;
           slug?: string;
-          late_api_key_encrypted?: string | null;
-          ai_api_key?: string | null;
           ai_provider?: string;
           global_keywords?: Json | null;
           updated_at?: string;
@@ -112,17 +106,17 @@ export interface Database {
         Row: {
           workspace_id: string;
           user_id: string;
-          role: string;
+          role: "owner" | "admin" | "agent";
           created_at: string;
         };
         Insert: {
           workspace_id: string;
           user_id: string;
-          role?: string;
+          role?: "owner" | "admin" | "agent";
           created_at?: string;
         };
         Update: {
-          role?: string;
+          role?: "owner" | "admin" | "agent";
         };
         Relationships: [
           {
@@ -144,7 +138,6 @@ export interface Database {
           display_name: string | null;
           profile_picture: string | null;
           webhook_id: string | null;
-          webhook_secret: string | null;
           is_active: boolean;
           last_comment_cursor: string | null;
           comment_rules: Json | null;
@@ -160,7 +153,6 @@ export interface Database {
           display_name?: string | null;
           profile_picture?: string | null;
           webhook_id?: string | null;
-          webhook_secret?: string | null;
           is_active?: boolean;
           last_comment_cursor?: string | null;
           comment_rules?: Json | null;
@@ -174,7 +166,6 @@ export interface Database {
           display_name?: string | null;
           profile_picture?: string | null;
           webhook_id?: string | null;
-          webhook_secret?: string | null;
           is_active?: boolean;
           last_comment_cursor?: string | null;
           comment_rules?: Json | null;
@@ -816,6 +807,7 @@ export interface Database {
           status: JobStatus;
           attempts: number;
           last_error: string | null;
+          locked_at: string | null;
           created_at: string;
         };
         Insert: {
@@ -826,12 +818,14 @@ export interface Database {
           status?: JobStatus;
           attempts?: number;
           last_error?: string | null;
+          locked_at?: string | null;
           created_at?: string;
         };
         Update: {
           status?: JobStatus;
           attempts?: number;
           last_error?: string | null;
+          locked_at?: string | null;
         };
         Relationships: [];
       };
@@ -876,7 +870,7 @@ export interface Database {
           id: string;
           workspace_id: string;
           email: string;
-          role: string;
+          role: "owner" | "admin" | "agent";
           invited_by: string;
           status: string;
           created_at: string;
@@ -886,7 +880,7 @@ export interface Database {
           id?: string;
           workspace_id: string;
           email: string;
-          role?: string;
+          role?: "owner" | "admin" | "agent";
           invited_by: string;
           status?: string;
           created_at?: string;
@@ -894,7 +888,7 @@ export interface Database {
         };
         Update: {
           email?: string;
-          role?: string;
+          role?: "owner" | "admin" | "agent";
           status?: string;
           expires_at?: string;
         };
@@ -1062,6 +1056,121 @@ export interface Database {
           },
         ];
       };
+      workspace_secrets: {
+        Row: {
+          workspace_id: string;
+          late_api_key: string | null;
+          ai_api_key: string | null;
+          late_webhook_secret: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          workspace_id: string;
+          late_api_key?: string | null;
+          ai_api_key?: string | null;
+          late_webhook_secret?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          late_api_key?: string | null;
+          ai_api_key?: string | null;
+          late_webhook_secret?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "workspace_secrets_workspace_id_fkey";
+            columns: ["workspace_id"];
+            isOneToOne: true;
+            referencedRelation: "workspaces";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      channel_secrets: {
+        Row: {
+          channel_id: string;
+          workspace_id: string;
+          webhook_secret: string;
+          updated_at: string;
+        };
+        Insert: {
+          channel_id: string;
+          workspace_id: string;
+          webhook_secret: string;
+          updated_at?: string;
+        };
+        Update: {
+          workspace_id?: string;
+          webhook_secret?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "channel_secrets_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: true;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "channel_secrets_workspace_id_fkey";
+            columns: ["workspace_id"];
+            isOneToOne: false;
+            referencedRelation: "workspaces";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      webhook_events: {
+        Row: {
+          id: string;
+          channel_id: string;
+          event_id: string;
+          payload: Json;
+          status: "pending" | "processing" | "completed" | "failed";
+          attempts: number;
+          available_at: string;
+          locked_at: string | null;
+          last_error: string | null;
+          inbox_applied_at: string | null;
+          claimed_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          channel_id: string;
+          event_id: string;
+          payload: Json;
+          status?: "pending" | "processing" | "completed" | "failed";
+          attempts?: number;
+          available_at?: string;
+          locked_at?: string | null;
+          last_error?: string | null;
+          inbox_applied_at?: string | null;
+          claimed_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          status?: "pending" | "processing" | "completed" | "failed";
+          attempts?: number;
+          available_at?: string;
+          locked_at?: string | null;
+          last_error?: string | null;
+          inbox_applied_at?: string | null;
+          claimed_at?: string;
+          completed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "webhook_events_channel_id_fkey";
+            columns: ["channel_id"];
+            isOneToOne: false;
+            referencedRelation: "channels";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
     };
     Views: {
       [_ in never]: never;
@@ -1084,6 +1193,61 @@ export interface Database {
         Args: {
           b_id: string;
         };
+        Returns: undefined;
+      };
+      create_workspace_for_user: {
+        Args: { p_name: string };
+        Returns: string;
+      };
+      accept_workspace_invite: {
+        Args: { p_invite_id: string; p_user_id: string };
+        Returns: string;
+      };
+      save_workspace_secrets: {
+        Args: {
+          p_workspace_id: string;
+          p_set_late_api_key: boolean;
+          p_late_api_key: string | null;
+          p_set_ai_api_key: boolean;
+          p_ai_api_key: string | null;
+          p_set_late_webhook_secret: boolean;
+          p_late_webhook_secret: string | null;
+        };
+        Returns: undefined;
+      };
+      claim_webhook_event: {
+        Args: { p_channel_id: string; p_event_id: string; p_payload: Json };
+        Returns: boolean;
+      };
+      claim_due_webhook_events: {
+        Args: { p_limit?: number };
+        Returns: Database["public"]["Tables"]["webhook_events"]["Row"][];
+      };
+      apply_webhook_inbox_update: {
+        Args: {
+          p_channel_id: string;
+          p_event_id: string;
+          p_conversation_id: string;
+          p_preview: string;
+        };
+        Returns: boolean;
+      };
+      claim_due_sequence_enrollments: {
+        Args: { p_limit?: number };
+        Returns: {
+          id: string;
+          sequence_id: string;
+          contact_id: string;
+          channel_id: string;
+          current_step_index: number;
+          status: SequenceEnrollmentStatus;
+          enrolled_at: string;
+          next_step_at: string | null;
+          completed_at: string | null;
+        }[];
+      };
+      release_sequence_enrollment_lock: {
+        Args: { p_enrollment_id: string };
         Returns: undefined;
       };
     };

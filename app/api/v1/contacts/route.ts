@@ -1,33 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
 
 export async function GET(request: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("workspace_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single();
-
-  if (!membership) return NextResponse.json({ error: "No workspace" }, { status: 404 });
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) {
+    return NextResponse.json({ error: resolution.error }, { status: resolution.status });
+  }
+  const { workspace, supabase } = resolution.context;
 
   const searchParams = request.nextUrl.searchParams;
-  const search = searchParams.get("search");
-  const tag = searchParams.get("tag");
+  const rawSearch = searchParams.get("search");
+  const search = rawSearch?.slice(0, 100).replace(/[(),.%_*\\]/g, "");
+  const tag = searchParams.get("tag")?.slice(0, 100);
   const subscribed = searchParams.get("subscribed");
-  const limit = parseInt(searchParams.get("limit") || "50", 10);
-  const offset = parseInt(searchParams.get("offset") || "0", 10);
+  const requestedLimit = Number.parseInt(searchParams.get("limit") || "50", 10);
+  const requestedOffset = Number.parseInt(searchParams.get("offset") || "0", 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+  const offset = Number.isFinite(requestedOffset) ? Math.min(Math.max(requestedOffset, 0), 1_000_000) : 0;
 
   let query = supabase
     .from("contacts")
     .select("*, contact_tags(tag_id, tags(id, name, color)), contact_channels(platform_sender_id, channel_id, channels(platform))", { count: "exact" })
-    .eq("workspace_id", membership.workspace_id)
+    .eq("workspace_id", workspace.id)
     .order("last_interaction_at", { ascending: false })
     .range(offset, offset + limit - 1);
 

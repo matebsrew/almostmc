@@ -10,7 +10,7 @@ import Link from "next/link";
 const roleIcons: Record<string, React.ReactNode> = {
   owner: <Crown className="h-3.5 w-3.5" />,
   admin: <Shield className="h-3.5 w-3.5" />,
-  member: <User className="h-3.5 w-3.5" />,
+  agent: <User className="h-3.5 w-3.5" />,
 };
 
 export function AcceptInviteView({
@@ -35,7 +35,7 @@ export function AcceptInviteView({
   const [error, setError] = useState<string | null>(null);
 
   const emailMismatch =
-    isLoggedIn && currentUserEmail && currentUserEmail !== email;
+    isLoggedIn && currentUserEmail?.toLowerCase() !== email.toLowerCase();
 
   async function handleAccept() {
     if (accepting) return;
@@ -79,7 +79,7 @@ export function AcceptInviteView({
           <h2 className="mt-3 text-lg font-semibold">{workspaceName}</h2>
           <div className="mt-2 flex items-center justify-center gap-1.5">
             <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium capitalize">
-              {roleIcons[role] ?? roleIcons.member}
+              {roleIcons[role] ?? roleIcons.agent}
               {role}
             </span>
           </div>

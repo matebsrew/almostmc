@@ -1,18 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
 
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ flowId: string }> }
 ) {
   const { flowId } = await params;
-  const supabase = await createClient();
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) return NextResponse.json({ error: resolution.error }, { status: resolution.status });
+  const { workspace, supabase } = resolution.context;
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { data: flow } = await supabase
+    .from("flows")
+    .select("id")
+    .eq("id", flowId)
+    .eq("workspace_id", workspace.id)
+    .maybeSingle();
+  if (!flow) return NextResponse.json({ error: "Flow not found" }, { status: 404 });
 
   const { data: versions, error } = await supabase
     .from("flow_versions")

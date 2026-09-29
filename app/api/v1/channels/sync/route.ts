@@ -1,23 +1,7 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 import { createZernioClient } from "@/lib/zernio-client";
-
-async function getWorkspace(supabase: Awaited<ReturnType<typeof createClient>>) {
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
-
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("workspace_id, workspaces(*)")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single();
-
-  if (!membership?.workspaces) return null;
-  return membership.workspaces;
-}
 
 /**
  * POST /api/v1/channels/sync
@@ -27,19 +11,27 @@ async function getWorkspace(supabase: Awaited<ReturnType<typeof createClient>>) 
  * Deactivates channels whose Zernio accounts no longer exist.
  */
 export async function POST() {
-  const supabase = await createClient();
-  const workspace = await getWorkspace(supabase);
-  if (!workspace)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) {
+    return NextResponse.json(
+      { error: resolution.error },
+      { status: resolution.status }
+    );
+  }
+  const { workspace, supabase, role } = resolution.context;
+  if (role !== "owner" && role !== "admin") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
-  if (!workspace.late_api_key_encrypted) {
+  const { lateApiKey } = await getWorkspaceSecrets(workspace.id);
+  if (!lateApiKey) {
     return NextResponse.json(
       { error: "Zernio API key not configured. Go to Settings first." },
       { status: 400 }
     );
   }
 
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(lateApiKey);
 
   try {
     const res = await zernio.accounts.listAccounts();
@@ -48,7 +40,7 @@ export async function POST() {
     // Get existing channels for this workspace
     const { data: existingChannels } = await supabase
       .from("channels")
-      .select("*")
+      .select("id, late_account_id, username, display_name, profile_picture, is_active")
       .eq("workspace_id", workspace.id);
 
     const existingByZernioId = new Map(
@@ -112,7 +104,7 @@ export async function POST() {
     // Return updated channel list
     const { data: channels } = await supabase
       .from("channels")
-      .select("*")
+      .select("id, workspace_id, platform, late_account_id, username, display_name, profile_picture, is_active, created_at")
       .eq("workspace_id", workspace.id)
       .order("created_at", { ascending: false });
 

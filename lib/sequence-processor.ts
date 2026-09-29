@@ -1,21 +1,19 @@
 import { createServiceClient } from "@/lib/supabase/server";
 import { createZernioClient } from "@/lib/zernio-client";
-import type { SequenceStep } from "@/lib/types/database";
+import type { Database, SequenceStep } from "@/lib/types/database";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 
 /**
  * Process all sequence enrollments that are due.
- * Called by the cron endpoint every 30-60 seconds.
+ * Called by the cron endpoint every minute.
  */
 export async function processSequenceSteps() {
   const supabase = await createServiceClient();
 
-  // Fetch enrollments that are due
-  const { data: enrollments, error } = await supabase
-    .from("sequence_enrollments")
-    .select("*, sequences(*)")
-    .eq("status", "active")
-    .lte("next_step_at", new Date().toISOString())
-    .limit(50);
+  const { data: enrollments, error } = await supabase.rpc(
+    "claim_due_sequence_enrollments",
+    { p_limit: 50 }
+  );
 
   if (error || !enrollments) {
     console.error("Failed to fetch sequence enrollments:", error);
@@ -35,6 +33,11 @@ export async function processSequenceSteps() {
         err instanceof Error ? err.message : err
       );
       failed++;
+    } finally {
+      const { error: releaseError } = await supabase.rpc("release_sequence_enrollment_lock", {
+        p_enrollment_id: enrollment.id,
+      });
+      if (releaseError) console.error("Failed to release sequence processing lock:", enrollment.id);
     }
   }
 
@@ -43,21 +46,14 @@ export async function processSequenceSteps() {
 
 async function processEnrollment(
   supabase: Awaited<ReturnType<typeof createServiceClient>>,
-  enrollment: {
-    id: string;
-    sequence_id: string;
-    contact_id: string;
-    channel_id: string;
-    current_step_index: number;
-    sequences: {
-      id: string;
-      workspace_id: string;
-      steps: unknown;
-      status: string;
-    } | null;
-  }
+  enrollment: Database["public"]["Tables"]["sequence_enrollments"]["Row"]
 ) {
-  const sequence = enrollment.sequences;
+  const { data: sequence, error: sequenceError } = await supabase
+    .from("sequences")
+    .select("id, workspace_id, steps, status")
+    .eq("id", enrollment.sequence_id)
+    .maybeSingle();
+  if (sequenceError) throw sequenceError;
   if (!sequence || sequence.status !== "active") {
     // Sequence was paused/deleted, cancel enrollment
     await supabase
@@ -67,7 +63,7 @@ async function processEnrollment(
     return;
   }
 
-  const steps = (sequence.steps as SequenceStep[]) || [];
+  const steps = (sequence.steps as unknown as SequenceStep[]) || [];
   const stepIndex = enrollment.current_step_index;
 
   if (stepIndex >= steps.length) {
@@ -142,18 +138,13 @@ async function sendSequenceMessage(
   text: string
 ) {
   // Get workspace API key
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", workspaceId)
-    .single();
-
-  if (!workspace?.late_api_key_encrypted) {
+  const { lateApiKey } = await getWorkspaceSecrets(workspaceId);
+  if (!lateApiKey) {
     console.error("No Zernio API key for workspace:", workspaceId);
     return;
   }
 
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(lateApiKey);
 
   // Get channel's late_account_id
   const { data: channel } = await supabase

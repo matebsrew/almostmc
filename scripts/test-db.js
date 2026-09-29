@@ -1,25 +1,22 @@
 const { createClient } = require('@supabase/supabase-js');
 
-const SUPABASE_URL = 'https://zknxctxmgwvrhotwolxl.supabase.co';
-const SERVICE_ROLE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprbnhjdHhtZ3d2cmhvdHdvbHhsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDE1NjQwNSwiZXhwIjoyMDk5NzMyNDA1fQ.QLPf1_pmlEc4O9a2Y6rQV2eeTPxMAVAOF9zbYfirTSE';
-
-const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-
-async function main() {
-  const { data: ws } = await supabase.from('workspaces').select('*').limit(1).single();
-  console.log('WS:', ws.id);
-
-  const { data, error } = await supabase
-    .from('workspace_members')
-    .insert({
-      workspace_id: ws.id,
-      user_id: '00000000-0000-0000-0000-000000000000',
-      role: 'owner'
-    })
-    .select();
-
-  console.log('Member Result:', data);
-  console.log('Member Error:', error);
+const supabaseUrl = process.env.SUPABASE_URL;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!supabaseUrl || !serviceRoleKey) {
+  throw new Error('Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in the environment');
 }
 
-main().catch(console.error);
+const supabase = createClient(supabaseUrl, serviceRoleKey, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
+
+async function main() {
+  const { error } = await supabase.from('workspaces').select('id').limit(1);
+  if (error) throw new Error('Supabase read check failed');
+  console.log('Supabase read check passed.');
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : 'Supabase check failed');
+  process.exitCode = 1;
+});

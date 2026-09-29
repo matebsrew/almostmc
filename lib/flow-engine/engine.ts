@@ -1,5 +1,8 @@
+import "server-only";
+
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/types/database";
+import { executeSafeHttpRequest } from "@/lib/security/safe-http-request.mjs";
 import type {
   FlowNode,
   FlowEdge,
@@ -20,6 +23,8 @@ import type {
 import { executeAiResponse } from "./nodes/ai-response";
 import { adaptMessage } from "./platform-adapter";
 import { createZernioClient } from "@/lib/zernio-client";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
+import { scheduleJob } from "@/lib/scheduler";
 
 export async function executeFlow(
   supabase: SupabaseClient<Database>,
@@ -303,15 +308,10 @@ async function executeSendMessage(
   context: FlowExecutionContext
 ) {
   // Get workspace for API key
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", context.workspaceId)
-    .single();
+  const { lateApiKey } = await getWorkspaceSecrets(context.workspaceId);
+  if (!lateApiKey) return;
 
-  if (!workspace?.late_api_key_encrypted) return;
-
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(lateApiKey);
 
   // Resolve late_account_id from channel if not in context
   let lateAccountId = context.lateAccountId;
@@ -528,9 +528,9 @@ async function executeDelay(
   const runAt = new Date(Date.now() + delayMs).toISOString();
 
   // Schedule a job to resume the flow
-  await supabase.from("scheduled_jobs").insert({
-    type: "resume_flow",
-    payload: {
+  await scheduleJob(
+    "resume_flow",
+    {
       sessionId,
       nodeId,
       flowId: context.flowId,
@@ -541,8 +541,8 @@ async function executeDelay(
       lateConversationId: context.lateConversationId || null,
       lateAccountId: context.lateAccountId || null,
     },
-    run_at: runAt,
-  });
+    new Date(runAt)
+  );
 
   // Update session to waiting
   await supabase
@@ -624,7 +624,8 @@ async function executeHttpRequest(
       ? interpolateVariables(data.body, context.variables || {})
       : undefined;
 
-    const response = await fetch(url, {
+    const response = await executeSafeHttpRequest({
+      url,
       method: data.method,
       headers: {
         "Content-Type": "application/json",
@@ -633,7 +634,7 @@ async function executeHttpRequest(
       body: data.method !== "GET" ? body : undefined,
     });
 
-    const responseData = await response.text();
+    const responseData = response.text;
 
     // Store response in variable if configured
     if (data.responseVariable && context.variables) {
@@ -722,15 +723,10 @@ async function executeCommentReply(
   data: CommentReplyNodeData,
   context: FlowExecutionContext
 ) {
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", context.workspaceId)
-    .single();
+  const { lateApiKey } = await getWorkspaceSecrets(context.workspaceId);
+  if (!lateApiKey) return;
 
-  if (!workspace?.late_api_key_encrypted) return;
-
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(lateApiKey);
 
   // Resolve late_account_id
   let lateAccountId = context.lateAccountId;
@@ -775,15 +771,10 @@ async function executePrivateReply(
   data: PrivateReplyNodeData,
   context: FlowExecutionContext
 ) {
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted")
-    .eq("id", context.workspaceId)
-    .single();
+  const { lateApiKey } = await getWorkspaceSecrets(context.workspaceId);
+  if (!lateApiKey) return;
 
-  if (!workspace?.late_api_key_encrypted) return;
-
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(lateApiKey);
 
   // Resolve late_account_id
   let lateAccountId = context.lateAccountId;

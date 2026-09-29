@@ -3,6 +3,7 @@ import type { Database } from "@/lib/types/database";
 import type { FlowExecutionContext, AiResponseNodeData } from "../types";
 import { createZernioClient } from "@/lib/zernio-client";
 import { generateText, createGateway } from "ai";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 
 export async function executeAiResponse(
   supabase: SupabaseClient<Database>,
@@ -10,15 +11,10 @@ export async function executeAiResponse(
   context: FlowExecutionContext
 ) {
   // Get workspace for Zernio API key + AI Gateway key
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("late_api_key_encrypted, ai_api_key")
-    .eq("id", context.workspaceId)
-    .single();
+  const workspaceSecrets = await getWorkspaceSecrets(context.workspaceId);
+  if (!workspaceSecrets.lateApiKey) return;
 
-  if (!workspace?.late_api_key_encrypted) return;
-
-  const zernio = createZernioClient(workspace.late_api_key_encrypted);
+  const zernio = createZernioClient(workspaceSecrets.lateApiKey);
 
   // Resolve late_account_id from channel if not in context
   let lateAccountId = context.lateAccountId;
@@ -78,7 +74,7 @@ export async function executeAiResponse(
 
   try {
     const model = data.model || "openai/gpt-4o-mini";
-    const aiGatewayKey = workspace.ai_api_key || process.env.AI_GATEWAY_API_KEY;
+    const aiGatewayKey = workspaceSecrets.aiApiKey || process.env.AI_GATEWAY_API_KEY;
     const gw = createGateway({ apiKey: aiGatewayKey || undefined });
     const result = await generateText({
       model: gw(model),

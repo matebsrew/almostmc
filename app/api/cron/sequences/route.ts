@@ -1,18 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processSequenceSteps } from "@/lib/sequence-processor";
+import { isAuthorizedCronRequest } from "@/lib/security/cron-auth";
 
 /**
  * Cron job handler that processes sequence enrollments.
- * Call via Vercel Cron or external cron every 30-60 seconds.
- * GET /api/cron/sequences?key=CRON_SECRET
+ * Call via Vercel Pro or external cron at least once per minute.
  */
 export async function GET(request: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  const providedSecret =
-    request.nextUrl.searchParams.get("key") ||
-    request.headers.get("authorization")?.replace("Bearer ", "");
-
-  if (!cronSecret || providedSecret !== cronSecret) {
+  if (!isAuthorizedCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

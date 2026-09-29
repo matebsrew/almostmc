@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/server";
+import { getApiWorkspace } from "@/lib/workspace";
 import { scheduleBroadcastDelivery } from "@/lib/scheduler";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, Json } from "@/lib/types/database";
@@ -31,33 +32,17 @@ export async function POST(
   { params }: { params: Promise<{ broadcastId: string }> }
 ) {
   const { broadcastId } = await params;
-  const supabase = await createClient();
-
-  // Auth check
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const { data: membership } = await supabase
-    .from("workspace_members")
-    .select("workspace_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single();
-
-  if (!membership) {
-    return NextResponse.json({ error: "No workspace" }, { status: 404 });
-  }
+  const resolution = await getApiWorkspace();
+  if (!resolution.context) return NextResponse.json({ error: resolution.error }, { status: resolution.status });
+  const { workspace, supabase, role } = resolution.context;
+  if (role !== "owner" && role !== "admin") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   // Fetch the broadcast
   const { data: broadcast, error: broadcastErr } = await supabase
     .from("broadcasts")
     .select("*")
     .eq("id", broadcastId)
-    .eq("workspace_id", membership.workspace_id)
+    .eq("workspace_id", workspace.id)
     .single();
 
   if (broadcastErr || !broadcast) {
@@ -96,11 +81,7 @@ export async function POST(
 
   // Resolve contacts from segment filter
   const filter = broadcast.segment_filter as unknown as SegmentFilter | null;
-  const contactIds = await resolveContacts(
-    supabase,
-    membership.workspace_id,
-    filter
-  );
+  const contactIds = await resolveContacts(supabase, workspace.id, filter);
 
   if (contactIds.length === 0) {
     return NextResponse.json(
@@ -145,9 +126,10 @@ export async function POST(
 
   // Insert in batches of 500
   const recipientIds: string[] = [];
+  const service = await createServiceClient();
   for (let i = 0; i < recipientRows.length; i += 500) {
     const batch = recipientRows.slice(i, i + 500);
-    const { data: inserted, error: insertErr } = await supabase
+    const { data: inserted, error: insertErr } = await service
       .from("broadcast_recipients")
       .insert(batch)
       .select("id");

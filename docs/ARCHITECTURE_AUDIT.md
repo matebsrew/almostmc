@@ -145,3 +145,30 @@ Não há validação de esquema/host, bloqueio de rede privada, política de red
 6. **Produto depois do hardening:** white-label → onboarding → templates → platform admin → entitlements → analytics → integrations → auditoria red team final, mantendo o Flow Engine e as telas existentes.
 
 **Escopo desta entrega:** apenas este relatório de auditoria. Nenhum código de produto ou migration foi alterado; a implementação para aqui conforme a primeira etapa solicitada.
+
+## Remediação da auditoria — 2026-09-29
+
+O texto acima é a fotografia original da auditoria e foi preservado. As correções abaixo estão implementadas nesta branch; isso não significa que foram aplicadas ao Supabase hospedado nem implantadas.
+
+### Correções de código
+
+- `lib/workspace.ts` resolve o workspace selecionado no servidor, falha sem sessão/membership e centraliza autorização por papel. APIs e actions migradas deixam de escolher silenciosamente a primeira membership.
+- `supabase/migrations/00011_security_hardening.sql` adiciona constraint de papéis, políticas e funções com `search_path` fechado, remove acesso de cliente às filas globais, valida referências entre workspaces e protege convites, segredos e eventos de webhook. Credenciais de workspace/canal saem das colunas acessíveis a membros e passam para tabelas de uso server-side; não há alegação de criptografia em repouso implementada por esta camada.
+- `app/api/webhooks/late/route.ts` exige HMAC-SHA256 do corpo bruto e chave de evento; grava eventos numa fila persistida com deduplicação. `/api/cron/webhooks` processa a fila com autenticação e lease. A atualização de unread é idempotente.
+- O nó HTTP do Flow Engine usa `lib/security/safe-http-request.mjs` para bloquear destinos locais/especiais, redirects, protocolos/portas inválidos e respostas sem limites de tamanho/tempo.
+- Cron de jobs e sequências valida segredo e payload, usa lease e não expõe filas a clientes. `vercel.json`, README e `.env.example` documentam os três cron endpoints e as variáveis necessárias.
+- O arquivo consolidado `supabase/migrations/ALL_MIGRATIONS.sql` foi regenerado a partir das migrations numeradas `00001`–`00011`. Scripts locais deixaram de conter credenciais privilegiadas fixas. Next foi atualizado para `16.3.7` e o entrypoint migrou de `middleware.ts` para `proxy.ts`.
+
+### Evidência e limite da validação
+
+`tests/security-regressions.test.mjs` cobre regressões de autorização, assinatura, filas e SSRF. `tests/migration-security.test.mjs` aplica as onze migrations em PostgreSQL WASM (`PGlite`) e testa isolamento entre workspaces, grants/RLS locais, convites, referências cruzadas, lease e idempotência. Esse harness remove `CREATE EXTENSION uuid-ossp` e `ALTER PUBLICATION supabase_realtime`; portanto, prova a execução SQL no Postgres local com stubs de auth, não a instalação, grants, extensões, auth, RLS ou estado remoto do projeto Supabase real. O Graphify atualizou o grafo de código, mas não extraiu 12 arquivos SQL por falta de `tree_sitter_sql` e relatou extração parcial em `lib/flow-engine/index.ts`; o grafo não foi tratado como prova de SQL.
+
+Verificação local em 2026-09-29: `npm test` — 13/13; `npm run lint` — exit 0; `npm run typecheck` — exit 0; `npm audit --audit-level=moderate` — 0 vulnerabilidades; `npm run build` — exit 0 usando placeholders locais de Supabase; `git diff --check` — exit 0. Isso valida a branch local, não um ambiente remoto. Não houve aplicação de migration remota, teste contra duas contas Supabase reais, configuração do cron hospedado nem deploy.
+
+### Pendências antes de uso real
+
+1. Revogar/rotacionar credenciais privilegiadas e senha compartilhada que apareceram no histórico público; remover os valores do histórico controlado pelo produto e conferir variáveis de deploy. Esta branch não executou essas ações externas.
+2. Aplicar as migrations numeradas em ambiente Supabase descartável, validar schema/grants/RLS e executar testes adversariais com usuários e workspaces reais antes de produção.
+3. Configurar `CRON_SECRET`, segredo de webhook e demais variáveis server-side no host. A [documentação de preços e uso do Vercel Cron](https://vercel.com/docs/cron-jobs/usage-and-pricing) limita Hobby a uma execução diária; Pro e Enterprise permitem uma vez por minuto. Usar plano compatível ou scheduler externo. A [documentação de webhooks do Zernio](https://docs.zernio.com/webhooks) exige resposta `2xx` em até 5 segundos e descreve entrega at-least-once, justificando fila persistida e deduplicação.
+4. O worker marca o evento concluído antes de acionar o Flow Engine para impedir automação duplicada em retry. Uma queda exatamente entre essas etapas pode perder a execução do flow; entrega externa exatamente-uma-vez não está provada.
+5. `platform_admin` e etapas posteriores de produto continuam fora deste hardening; a migração restringe os papéis atuais a `owner`, `admin` e `agent`.

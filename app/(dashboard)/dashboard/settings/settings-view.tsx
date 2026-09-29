@@ -19,13 +19,14 @@ import {
   Sparkles,
 } from "lucide-react";
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/client";
+import { saveWorkspaceSettings } from "@/lib/actions/workspace";
 
 interface WorkspaceSettings {
   id: string;
   name: string;
   hasApiKey: boolean;
   hasAiKey: boolean;
+  hasWebhookSecret: boolean;
   globalKeywords: string[];
 }
 
@@ -45,6 +46,7 @@ export function SettingsView({
   const [showApiKey, setShowApiKey] = useState(false);
   const [aiKey, setAiKey] = useState("");
   const [showAiKey, setShowAiKey] = useState(false);
+  const [webhookSecret, setWebhookSecret] = useState("");
   const [keywords, setKeywords] = useState<string[]>(workspace.globalKeywords);
   const [newKeyword, setNewKeyword] = useState("");
   const [saving, setSaving] = useState(false);
@@ -79,7 +81,7 @@ export function SettingsView({
       const res = await fetch("/api/v1/channels/test-key", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: keyToTest, workspaceId: workspace.id }),
+        body: JSON.stringify({ apiKey: keyToTest }),
       });
 
       const data = await res.json();
@@ -92,10 +94,9 @@ export function SettingsView({
         return;
       }
 
-      const accounts = data.accounts || [];
       setTestResult({
         success: true,
-        accountCount: accounts.length,
+        accountCount: Number.isInteger(data.accountCount) ? data.accountCount : 0,
       });
 
       // Key was saved and channels synced server-side
@@ -117,40 +118,23 @@ export function SettingsView({
     setSaved(false);
 
     try {
-      const supabase = createClient();
-
-      const update: Record<string, unknown> = {
-        name: name.trim(),
-        global_keywords: keywords,
-      };
-
-      // Only update keys if user entered new ones
-      if (apiKey.trim()) {
-        update.late_api_key_encrypted = apiKey.trim();
-      }
-      if (aiKey.trim()) {
-        update.ai_api_key = aiKey.trim();
-      }
-
-      const { error: updateError } = await supabase
-        .from("workspaces")
-        .update(update)
-        .eq("id", workspace.id)
-        .select("id")
-        .single();
-
-      if (updateError) {
-        console.error("Settings save error:", updateError);
-        throw new Error(updateError.message);
-      }
+      const result = await saveWorkspaceSettings({
+        workspaceId: workspace.id,
+        name,
+        globalKeywords: keywords,
+        lateApiKey: apiKey,
+        aiApiKey: aiKey,
+        lateWebhookSecret: webhookSecret,
+      });
+      if ("error" in result) throw new Error(result.error);
 
       setSaved(true);
       setApiKey("");
       setAiKey("");
+      setWebhookSecret("");
       setTestResult(null);
       setTimeout(() => setSaved(false), 3000);
     } catch (err) {
-      console.error("Failed to save settings:", err);
       setError(err instanceof Error ? err.message : "Failed to save settings. Please try again.");
     } finally {
       setSaving(false);
@@ -290,6 +274,28 @@ export function SettingsView({
                 API key configured
               </p>
             )}
+          </section>
+
+          <hr className="border-border" />
+
+          {/* Webhook signing secret */}
+          <section>
+            <div className="flex items-center gap-2">
+              <Key className="h-4 w-4 text-muted-foreground" />
+              <h2 className="text-sm font-semibold">Zernio Webhook Secret</h2>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Set the same secret on the Zernio webhook that points to <code>/api/webhooks/late</code>.
+              Use at least 32 characters.
+              {workspace.hasWebhookSecret && " A secret is currently configured."}
+            </p>
+            <input
+              type="password"
+              value={webhookSecret}
+              onChange={(event) => setWebhookSecret(event.target.value)}
+              placeholder={workspace.hasWebhookSecret ? "Enter a new secret to replace it" : "Enter the Zernio webhook secret"}
+              className="mt-4 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-mono placeholder:text-muted-foreground placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-ring"
+            />
           </section>
 
           <hr className="border-border" />

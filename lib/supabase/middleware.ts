@@ -13,9 +13,7 @@ export async function updateSession(request: NextRequest) {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          );
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
           supabaseResponse = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
             supabaseResponse.cookies.set(name, value, options)
@@ -25,42 +23,37 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
-  let {
+  const {
     data: { user },
   } = await supabase.auth.getUser();
 
   const pathname = request.nextUrl.pathname;
-
   const isAuthPage = pathname === "/login" || pathname === "/register";
   const isAuthCallback = pathname === "/auth/callback";
-  const isDashboard = pathname.startsWith("/dashboard");
   const isApiRoute = pathname.startsWith("/api/");
+  const isSelfAuthenticatedApi =
+    pathname === "/api/webhooks/late" ||
+    pathname === "/api/cron/jobs" ||
+    pathname === "/api/cron/sequences";
 
-  // Auth callback and API routes (including webhooks) always pass through
-  if (isAuthCallback || isApiRoute) {
-    return supabaseResponse;
+  if (isAuthCallback || isSelfAuthenticatedApi) return supabaseResponse;
+
+  if (isApiRoute && !user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Single-Tenant Auto-Login: if not authenticated, sign in as default admin
-  if (!user) {
-    const { data: signInData } = await supabase.auth.signInWithPassword({
-      email: "heidi@zernflow.com",
-      password: "ZernFlowAdmin2026!",
-    });
-    if (signInData.user) {
-      user = signInData.user;
-    }
-  }
-
-  // If visiting root or auth page, redirect to /dashboard
-  if (pathname === "/" || isAuthPage) {
+  const redirectWithCookies = (destination: string) => {
     const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    const redirectResponse = NextResponse.redirect(url);
-    supabaseResponse.cookies.getAll().forEach((cookie) => {
-      redirectResponse.cookies.set(cookie.name, cookie.value);
-    });
-    return redirectResponse;
+    url.pathname = destination;
+    const response = NextResponse.redirect(url);
+    supabaseResponse.cookies.getAll().forEach((cookie) => response.cookies.set(cookie));
+    return response;
+  };
+
+  if (pathname === "/") return redirectWithCookies(user ? "/dashboard" : "/login");
+  if (user && isAuthPage) return redirectWithCookies("/dashboard");
+  if (!user && (pathname === "/dashboard" || pathname.startsWith("/dashboard/"))) {
+    return redirectWithCookies("/login");
   }
 
   return supabaseResponse;

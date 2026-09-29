@@ -34,7 +34,7 @@ ZernFlow is an open-source alternative to ManyChat. Build visual chatbot flows, 
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 20.9+
 - A [Supabase](https://supabase.com) project (free tier works)
 - A [Zernio](https://zernio.com) API key (entered in Settings after setup)
 - A [Vercel AI Gateway](https://vercel.com/ai-gateway) key (optional, for AI node, entered in Settings or env)
@@ -44,8 +44,8 @@ ZernFlow is an open-source alternative to ManyChat. Build visual chatbot flows, 
 1. **Clone the repo**
 
 ```bash
-git clone https://github.com/zernio-dev/zernflow.git
-cd zernflow
+git clone https://github.com/matebsrew/almostmc.git
+cd almostmc
 npm install
 ```
 
@@ -54,7 +54,8 @@ npm install
 Create a free project at [supabase.com](https://supabase.com). Then run the SQL migrations in the Supabase SQL editor:
 
 ```bash
-# Run each file in supabase/migrations/ in order (00001 through 00009)
+# Run each numbered file in supabase/migrations/ in order (00001 through 00011).
+# ALL_MIGRATIONS.sql is a convenience export, not the source of truth.
 ```
 
 3. **Configure environment**
@@ -69,7 +70,7 @@ Fill in your Supabase credentials:
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-CRON_SECRET=your-cron-secret              # For sequence processor + job scheduler
+CRON_SECRET=replace-with-at-least-32-random-characters # Bearer token for scheduled endpoints
 # AI_GATEWAY_API_KEY=...                  # Optional, for self-hosted (Vercel handles this automatically)
 ```
 
@@ -82,6 +83,12 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000), sign up, and start building flows.
+
+### Scheduled work
+
+The scheduled-job, sequence, and webhook-processing endpoints expect an `Authorization: Bearer <CRON_SECRET>` header. Do not pass the secret in a query string. `vercel.json` runs all three endpoints every minute, which requires a Vercel Pro or Enterprise plan; Vercel Hobby allows only one run per day. On Hobby, configure an external scheduler to call all three endpoints at least once per minute. The webhook receiver validates the Zernio signature, stores each event, and returns `202`; the webhook cron processes the stored event.
+
+Before applying migration `00011`, review any preflight error and repair the named legacy rows. The migration intentionally stops when roles, pending owner invitations, ownership, or cross-workspace relations violate the new constraints. It copies existing API and webhook secrets into service-only tables before dropping the old workspace/channel columns.
 
 ## Architecture
 
@@ -148,6 +155,7 @@ zernflow/
 │       ├── webhooks/late/   # Webhook receiver
 │       ├── cron/jobs/       # Job scheduler
 │       ├── cron/sequences/  # Sequence step processor
+│       ├── cron/webhooks/   # Persisted webhook processor
 │       └── v1/              # CRUD API routes
 ├── components/
 │   ├── flow-builder/        # Canvas, nodes, panels
@@ -161,7 +169,7 @@ zernflow/
 │   ├── actions/             # Server actions (team, sequences, workspace)
 │   └── types/               # TypeScript types
 └── supabase/
-    └── migrations/          # SQL schema + RLS policies (00001-00009)
+    └── migrations/          # SQL schema + RLS policies (00001-00011)
 ```
 
 ## Contributing
