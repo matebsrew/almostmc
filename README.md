@@ -1,3 +1,9 @@
+# AlmostMC (fork of ZernFlow)
+
+> Fork of the MIT-licensed [ZernFlow](https://github.com/dynknight/zernflow) with security hardening. **Start with [SETUP_FOR_AI.md](SETUP_FOR_AI.md)**: it is a step-by-step guide a human or an AI coding agent can follow. No credentials are included; you create your own Supabase and Zernio accounts.
+
+---
+
 # ZernFlow
 
 The open-source ManyChat alternative. Visual flow builder for Instagram, Facebook, Telegram, Twitter/X, Bluesky & Reddit.
@@ -86,7 +92,7 @@ Open [http://localhost:3000](http://localhost:3000), sign up, and start building
 
 ### Scheduled work
 
-The scheduled-job, sequence, and webhook-processing endpoints expect an `Authorization: Bearer <CRON_SECRET>` header. Do not pass the secret in a query string. `vercel.json` runs all three endpoints every minute, which requires a Vercel Pro or Enterprise plan; Vercel Hobby allows only one run per day. On Hobby, configure an external scheduler to call all three endpoints at least once per minute. The webhook receiver validates the Zernio signature, stores each event, and returns `202`; the webhook cron processes the stored event.
+The scheduled-job, sequence, and webhook-processing endpoints expect an `Authorization: Bearer <CRON_SECRET>` header. Do not pass the secret in a query string. `vercel.json` runs all three endpoints once per day so it deploys on Vercel Hobby; change the schedules to `* * * * *` on Pro/Enterprise. On Hobby, configure an external scheduler to call all three endpoints at least once per minute. The webhook receiver validates the Zernio signature, stores each event, and returns `202`; the webhook cron processes the stored event.
 
 Before applying migration `00011`, review any preflight error and repair the named legacy rows. The migration intentionally stops when roles, pending owner invitations, ownership, or cross-workspace relations violate the new constraints. It copies existing API and webhook secrets into service-only tables before dropping the old workspace/channel columns.
 
