@@ -23,6 +23,7 @@ export default async function GrowthPage() {
       .select("id, platform, late_account_id, username, display_name")
       .eq("workspace_id", workspace.id)
       .eq("is_active", true)
+      .in("platform", ["instagram", "facebook"])
       .order("created_at", { ascending: false }),
     // Fetch all comment_keyword triggers for this workspace's flows in one query
     supabase
