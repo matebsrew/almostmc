@@ -246,6 +246,7 @@ function FlowCanvasInner({ flow }: FlowCanvasProps) {
         setEdges((current) =>
           addEdge(
             {
+              id: `edge_${parent.id}_${node.id}`,
               source: parent.id,
               target: node.id,
               animated: true,
