@@ -11,6 +11,8 @@ import {
   Shuffle,
   Hourglass,
   Cog,
+  MessageCircleReply,
+  Send,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NodeType } from "@/lib/types/database";
@@ -77,14 +79,14 @@ const actionConfig: Record<
     color: "bg-gray-500",
   },
   commentReply: {
-    icon: Cog,
+    icon: MessageCircleReply,
     label: "Comment Reply",
-    color: "bg-gray-500",
+    color: "bg-sky-500",
   },
   privateReply: {
-    icon: Cog,
+    icon: Send,
     label: "Private Reply",
-    color: "bg-gray-500",
+    color: "bg-fuchsia-500",
   },
   abSplit: {
     icon: Shuffle,
