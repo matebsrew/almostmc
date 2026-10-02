@@ -81,17 +81,41 @@ test("API secrets and webhook signatures are no longer exposed through tenant ro
   assert.equal(/apply_webhook_inbox_update/.test(sql), true);
 });
 
-test("webhook queue processing is isolated behind the cron bearer secret", async () => {
-  const [route, cron, config] = await Promise.all([
+test("webhook queue processing has an immediate path and an authenticated retry path", async () => {
+  const [route, worker, cron, middleware, config] = await Promise.all([
     source("app/api/webhooks/late/route.ts"),
+    source("lib/webhooks/late-events.ts"),
     source("app/api/cron/webhooks/route.ts"),
+    source("lib/supabase/middleware.ts"),
     source("vercel.json"),
   ]);
 
   assert.equal(/isAuthorizedCronRequest/.test(cron), true);
-  assert.equal(/claim_due_webhook_events/.test(await source("lib/webhooks/late-events.ts")), true);
+  assert.equal(/claim_due_webhook_events/.test(worker), true);
+  assert.equal(/processQueuedWebhookEvents\(1\)/.test(route), true);
+  assert.equal(/\bafter\s*\(/.test(route), true);
   assert.equal(/\/api\/cron\/webhooks/.test(config), true);
+  assert.equal(/\/api\/cron\/webhooks/.test(middleware), true);
   assert.equal(/executeFlow/.test(route), false);
+});
+
+test("Zernio message and comment webhooks reach the automation engine", async () => {
+  const [route, worker, matcher, engine] = await Promise.all([
+    source("app/api/webhooks/late/route.ts"),
+    source("lib/webhooks/late-events.ts"),
+    source("lib/flow-engine/trigger-matcher.ts"),
+    source("lib/flow-engine/engine.ts"),
+  ]);
+
+  assert.equal(/comment\.received/.test(route), true);
+  assert.equal(/\["incoming", "outgoing", "inbound", "outbound"\]/.test(route), true);
+  assert.equal(/isOwnAccount/.test(route + worker), true);
+  assert.equal(/processCommentWebhookEvent/.test(worker), true);
+  assert.equal(/from\("comment_logs"\)/.test(worker), true);
+  assert.equal(/matchCommentTrigger/.test(worker + matcher), true);
+  assert.equal(/comment_log_id/.test(worker + engine), true);
+  assert.equal(/dm_sent:\s*true/.test(engine), true);
+  assert.equal(/reply_sent:\s*true/.test(engine), true);
 });
 
 test("cron endpoints require a bearer secret and lease claimed work", async () => {
