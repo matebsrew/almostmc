@@ -1,13 +1,23 @@
 import "server-only";
 
 import { executeFlow } from "@/lib/flow-engine/engine";
-import { matchTrigger } from "@/lib/flow-engine/trigger-matcher";
+import { matchCommentTrigger, matchTrigger } from "@/lib/flow-engine/trigger-matcher";
 import { createServiceClient } from "@/lib/supabase/server";
 import type { Database, Json } from "@/lib/types/database";
+import { createZernioClient } from "@/lib/zernio-client";
+import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 
-interface WebhookPayload {
+interface WebhookAccount {
+  id?: string;
+  accountId?: string;
+  platform?: string;
+  username?: string;
+  displayName?: string;
+}
+
+interface WebhookMessagePayload {
   id: string;
-  event: string;
+  event: "message.received";
   message: {
     id: string;
     conversationId: string;
@@ -15,12 +25,12 @@ interface WebhookPayload {
     platformMessageId: string;
     direction: string;
     text: string | null;
-    attachments: Array<{ type: string; url: string; payload?: string }>;
+    attachments: Array<{ type: string; url: string; payload?: unknown }>;
     sender: {
       id: string;
-      name: string;
-      username: string | null;
-      picture: string | null;
+      name?: string;
+      username?: string | null;
+      picture?: string | null;
     };
     sentAt: string;
     isRead: boolean;
@@ -29,17 +39,12 @@ interface WebhookPayload {
     id: string;
     platformConversationId: string | null;
     participantId: string;
-    participantName: string;
-    participantUsername: string | null;
-    participantPicture: string | null;
+    participantName?: string;
+    participantUsername?: string | null;
+    participantPicture?: string | null;
     status: string;
   };
-  account: {
-    id: string;
-    platform: string;
-    username: string;
-    displayName: string;
-  };
+  account: WebhookAccount;
   metadata?: {
     quickReplyPayload?: string;
     callbackData?: string;
@@ -48,6 +53,36 @@ interface WebhookPayload {
   };
   timestamp: string;
 }
+
+interface WebhookCommentPayload {
+  id: string;
+  event: "comment.received";
+  comment: {
+    id: string;
+    postId: string | null;
+    platformPostId: string;
+    platform: string;
+    text: string;
+    author: {
+      id: string;
+      username?: string | null;
+      name?: string | null;
+      picture?: string | null;
+      isOwnAccount?: boolean;
+    };
+    createdAt: string;
+    isReply: boolean;
+    parentCommentId: string | null;
+  };
+  post: {
+    id: string | null;
+    platformPostId: string;
+  };
+  account: WebhookAccount;
+  timestamp: string;
+}
+
+type WebhookPayload = WebhookMessagePayload | WebhookCommentPayload;
 
 type ServiceClient = Awaited<ReturnType<typeof createServiceClient>>;
 type WebhookEvent = Database["public"]["Tables"]["webhook_events"]["Row"];
@@ -104,6 +139,17 @@ async function processWebhookEvent(supabase: ServiceClient, event: WebhookEvent)
   }
 
   const payload = event.payload as unknown as WebhookPayload;
+
+  if (payload.event === "comment.received") {
+    await processCommentWebhookEvent(supabase, event, channel, payload);
+    return;
+  }
+
+  if (payload.event !== "message.received") {
+    await markWebhookEventCompleted(supabase, event);
+    return;
+  }
+
   const { message: msg, conversation: conv, account, metadata } = payload;
 
   if (msg.sender.username) {
@@ -232,7 +278,7 @@ async function processWebhookEvent(supabase: ServiceClient, event: WebhookEvent)
             workspaceId: channel.workspace_id,
             incomingMessage,
             lateConversationId: conv.id,
-            lateAccountId: account.id,
+            lateAccountId: account.accountId ?? account.id ?? channel.late_account_id,
           });
         } catch (error) {
           console.error(
@@ -247,6 +293,265 @@ async function processWebhookEvent(supabase: ServiceClient, event: WebhookEvent)
   }
 
   await markWebhookEventCompleted(supabase, event);
+}
+
+async function processCommentWebhookEvent(
+  supabase: ServiceClient,
+  event: WebhookEvent,
+  channel: {
+    id: string;
+    workspace_id: string;
+    platform: Database["public"]["Tables"]["channels"]["Row"]["platform"];
+    late_account_id: string;
+  },
+  payload: WebhookCommentPayload
+) {
+  const { comment } = payload;
+
+  // Meta can echo our own public replies back as comment.received. Missing
+  // isOwnAccount is intentionally not treated as false.
+  if (comment.author.isOwnAccount === true) {
+    await markWebhookEventCompleted(supabase, event);
+    return;
+  }
+
+  const postIds = [
+    comment.postId,
+    comment.platformPostId,
+    payload.post?.id,
+    payload.post?.platformPostId,
+  ].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+  const apiPostId = comment.postId || comment.platformPostId;
+
+  let { data: commentLog, error: commentLogError } = await supabase
+    .from("comment_logs")
+    .select("id, matched_trigger_id, dm_sent, reply_sent")
+    .eq("channel_id", channel.id)
+    .eq("platform_comment_id", comment.id)
+    .maybeSingle();
+
+  if (commentLogError) throw commentLogError;
+
+  if (!commentLog) {
+    const inserted = await supabase
+      .from("comment_logs")
+      .insert({
+        channel_id: channel.id,
+        workspace_id: channel.workspace_id,
+        post_id: apiPostId,
+        platform_comment_id: comment.id,
+        author_id: comment.author.id,
+        author_name: comment.author.name || null,
+        author_username: comment.author.username || null,
+        comment_text: comment.text,
+      })
+      .select("id, matched_trigger_id, dm_sent, reply_sent")
+      .single();
+
+    if (inserted.error || !inserted.data) {
+      throw inserted.error ?? new Error("Comment log insert failed");
+    }
+    commentLog = inserted.data;
+  }
+
+  const trigger = await matchCommentTrigger(
+    supabase,
+    channel.id,
+    channel.workspace_id,
+    {
+      text: comment.text,
+      postIds,
+    }
+  );
+
+  if (!trigger) {
+    await markWebhookEventCompleted(supabase, event);
+    return;
+  }
+
+  if (commentLog.matched_trigger_id !== trigger.id) {
+    const { error } = await supabase
+      .from("comment_logs")
+      .update({ matched_trigger_id: trigger.id })
+      .eq("id", commentLog.id)
+      .eq("workspace_id", channel.workspace_id);
+    if (error) throw error;
+  }
+
+  const triggerConfig = trigger.config as {
+    replyText?: string;
+  };
+
+  if (triggerConfig.replyText?.trim() && !commentLog.reply_sent) {
+    try {
+      const { lateApiKey } = await getWorkspaceSecrets(channel.workspace_id);
+      if (!lateApiKey) throw new Error("Zernio API key is not configured");
+
+      const zernio = createZernioClient(lateApiKey);
+      await zernio.comments.replyToInboxPost({
+        path: { postId: apiPostId },
+        body: {
+          accountId: channel.late_account_id,
+          message: triggerConfig.replyText.trim(),
+          commentId: comment.id,
+        },
+      });
+
+      await supabase
+        .from("comment_logs")
+        .update({ reply_sent: true })
+        .eq("id", commentLog.id)
+        .eq("workspace_id", channel.workspace_id);
+    } catch (error) {
+      console.error(
+        "Public comment reply failed:",
+        error instanceof Error ? error.name : "Error"
+      );
+      await supabase
+        .from("comment_logs")
+        .update({ error: "Public reply failed" })
+        .eq("id", commentLog.id)
+        .eq("workspace_id", channel.workspace_id);
+    }
+  }
+
+  const senderId = comment.author.id;
+  const senderName =
+    comment.author.name || comment.author.username || comment.author.id;
+
+  let contactId: string;
+  const { data: existingContactChannel, error: contactChannelError } =
+    await supabase
+      .from("contact_channels")
+      .select("contact_id")
+      .eq("channel_id", channel.id)
+      .eq("platform_sender_id", senderId)
+      .maybeSingle();
+
+  if (contactChannelError) throw contactChannelError;
+
+  if (existingContactChannel) {
+    contactId = existingContactChannel.contact_id;
+    const { error } = await supabase
+      .from("contacts")
+      .update({ last_interaction_at: new Date().toISOString() })
+      .eq("id", contactId)
+      .eq("workspace_id", channel.workspace_id);
+    if (error) throw error;
+  } else {
+    const { data: newContact, error: createContactError } = await supabase
+      .from("contacts")
+      .insert({
+        workspace_id: channel.workspace_id,
+        display_name: senderName,
+        avatar_url: comment.author.picture || null,
+        last_interaction_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single();
+
+    if (createContactError || !newContact) {
+      throw createContactError ?? new Error("Contact insert failed");
+    }
+
+    contactId = newContact.id;
+    const { error: linkError } = await supabase
+      .from("contact_channels")
+      .insert({
+        contact_id: contactId,
+        channel_id: channel.id,
+        platform_sender_id: senderId,
+        platform_username: comment.author.username || null,
+      });
+    if (linkError) throw linkError;
+
+    await supabase.from("analytics_events").insert({
+      workspace_id: channel.workspace_id,
+      contact_id: contactId,
+      event_type: "contact_created",
+    });
+  }
+
+  let conversationId: string;
+  const { data: existingConversation, error: conversationReadError } =
+    await supabase
+      .from("conversations")
+      .select("id")
+      .eq("channel_id", channel.id)
+      .eq("contact_id", contactId)
+      .maybeSingle();
+
+  if (conversationReadError) throw conversationReadError;
+
+  if (existingConversation) {
+    conversationId = existingConversation.id;
+  } else {
+    const { data: conversation, error: conversationCreateError } = await supabase
+      .from("conversations")
+      .insert({
+        workspace_id: channel.workspace_id,
+        channel_id: channel.id,
+        contact_id: contactId,
+        platform: channel.platform,
+        status: "open",
+      })
+      .select("id")
+      .single();
+
+    if (conversationCreateError || !conversation) {
+      throw (
+        conversationCreateError ?? new Error("Comment conversation insert failed")
+      );
+    }
+    conversationId = conversation.id;
+  }
+
+  // Match the existing message path's at-most-once behavior: durable state is
+  // committed before outbound flow side effects begin.
+  await markWebhookEventCompleted(supabase, event);
+
+  try {
+    await executeFlow(supabase, {
+      triggerId: trigger.id,
+      flowId: trigger.flow_id,
+      channelId: channel.id,
+      contactId,
+      conversationId,
+      workspaceId: channel.workspace_id,
+      incomingMessage: {
+        text: comment.text,
+        sender: {
+          id: comment.author.id,
+          name: comment.author.name || undefined,
+          username: comment.author.username || undefined,
+        },
+      },
+      lateAccountId: channel.late_account_id,
+      variables: {
+        comment_id: comment.id,
+        post_id: apiPostId,
+        platform_post_id: comment.platformPostId,
+        comment_text: comment.text,
+        comment_author_id: comment.author.id,
+        comment_author_name: comment.author.name || "",
+        comment_author_username: comment.author.username || "",
+        comment_log_id: commentLog.id,
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Comment flow execution failed:",
+      event.event_id,
+      error instanceof Error ? error.name : "Error"
+    );
+    await supabase
+      .from("comment_logs")
+      .update({ error: "Flow execution failed" })
+      .eq("id", commentLog.id)
+      .eq("workspace_id", channel.workspace_id);
+  }
 }
 
 async function markWebhookEventCompleted(supabase: ServiceClient, event: WebhookEvent) {
