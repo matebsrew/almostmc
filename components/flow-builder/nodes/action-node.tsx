@@ -11,6 +11,8 @@ import {
   Shuffle,
   Hourglass,
   Cog,
+  MessageCircleReply,
+  Send,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { NodeType } from "@/lib/types/database";
@@ -26,6 +28,7 @@ export interface ActionNodeProps {
   url?: string;
   flowId?: string;
   message?: string;
+  text?: string;
   paths?: Array<{ name: string; weight: number }>;
   timeout?: number;
   timeoutUnit?: string;
@@ -76,14 +79,14 @@ const actionConfig: Record<
     color: "bg-gray-500",
   },
   commentReply: {
-    icon: Cog,
+    icon: MessageCircleReply,
     label: "Comment Reply",
-    color: "bg-gray-500",
+    color: "bg-sky-500",
   },
   privateReply: {
-    icon: Cog,
+    icon: Send,
     label: "Private Reply",
-    color: "bg-gray-500",
+    color: "bg-fuchsia-500",
   },
   abSplit: {
     icon: Shuffle,
@@ -118,6 +121,10 @@ function getSummary(nodeData: ActionNodeProps): string | null {
       return nodeData.flowId ? `Flow: ${nodeData.flowId.slice(0, 8)}...` : null;
     case "humanTakeover":
       return nodeData.message || "Hand off to agent";
+    case "commentReply":
+      return nodeData.text ? `Public: ${nodeData.text}` : null;
+    case "privateReply":
+      return nodeData.text ? `DM: ${nodeData.text}` : null;
     case "subscribe":
       return "Subscribe contact";
     case "unsubscribe":

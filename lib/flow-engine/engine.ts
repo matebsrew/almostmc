@@ -26,6 +26,52 @@ import { createZernioClient } from "@/lib/zernio-client";
 import { getWorkspaceSecrets } from "@/lib/security/workspace-secrets";
 import { scheduleJob } from "@/lib/scheduler";
 
+async function loadPublishedFlowGraph(
+  supabase: SupabaseClient<Database>,
+  flowId: string
+): Promise<{ nodes: FlowNode[]; edges: FlowEdge[] } | null> {
+  const { data: flow, error: flowError } = await supabase
+    .from("flows")
+    .select("id, status, version, nodes, edges")
+    .eq("id", flowId)
+    .eq("status", "published")
+    .maybeSingle();
+
+  if (flowError) throw flowError;
+  if (!flow) return null;
+
+  const { data: snapshot, error: snapshotError } = await supabase
+    .from("flow_versions")
+    .select("nodes, edges")
+    .eq("flow_id", flow.id)
+    .eq("version", flow.version)
+    .maybeSingle();
+
+  if (snapshotError) throw snapshotError;
+
+  if (snapshot) {
+    return {
+      nodes: snapshot.nodes as unknown as FlowNode[],
+      edges: snapshot.edges as unknown as FlowEdge[],
+    };
+  }
+
+  if (flow.version === 1) {
+    return {
+      nodes: flow.nodes as unknown as FlowNode[],
+      edges: flow.edges as unknown as FlowEdge[],
+    };
+  }
+
+  console.error(
+    "Published flow snapshot is missing:",
+    flow.id,
+    "version",
+    flow.version
+  );
+  return null;
+}
+
 export async function executeFlow(
   supabase: SupabaseClient<Database>,
   context: FlowExecutionContext
@@ -44,18 +90,12 @@ export async function executeFlow(
     return resumeSession(supabase, activeSession, context);
   }
 
-  // Load flow
-  const { data: flow } = await supabase
-    .from("flows")
-    .select("*")
-    .eq("id", context.flowId)
-    .eq("status", "published")
-    .single();
+  // Load the immutable published snapshot. Draft edits saved by the builder
+  // must not affect live automation until Publish creates a new version.
+  const graph = await loadPublishedFlowGraph(supabase, context.flowId);
+  if (!graph) return;
 
-  if (!flow) return;
-
-  const nodes = flow.nodes as unknown as FlowNode[];
-  const edges = flow.edges as unknown as FlowEdge[];
+  const { nodes, edges } = graph;
 
   // Get channel platform and late_account_id
   const { data: channel } = await supabase
@@ -127,16 +167,10 @@ async function resumeSession(
   session: Database["public"]["Tables"]["flow_sessions"]["Row"],
   context: FlowExecutionContext
 ) {
-  const { data: flow } = await supabase
-    .from("flows")
-    .select("*")
-    .eq("id", session.flow_id)
-    .single();
+  const graph = await loadPublishedFlowGraph(supabase, session.flow_id);
+  if (!graph) return;
 
-  if (!flow) return;
-
-  const nodes = flow.nodes as unknown as FlowNode[];
-  const edges = flow.edges as unknown as FlowEdge[];
+  const { nodes, edges } = graph;
 
   const { data: channel } = await supabase
     .from("channels")

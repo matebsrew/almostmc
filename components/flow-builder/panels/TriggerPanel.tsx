@@ -28,7 +28,6 @@ const triggerTypes: Array<{ value: TriggerType; label: string; description: stri
   { value: "quick_reply", label: "Quick Reply", description: "Triggered when a user taps a quick reply" },
   { value: "welcome", label: "Welcome Message", description: "Triggered when a user starts a conversation" },
   { value: "default", label: "Default Reply", description: "Triggered when no other trigger matches" },
-  { value: "comment_keyword", label: "Comment Keyword", description: "Triggered by keywords in post comments" },
 ];
 
 const matchTypes: Array<{ value: "exact" | "contains" | "startsWith"; label: string }> = [
@@ -75,7 +74,7 @@ export function TriggerPanel({ data: rawData, onChange }: TriggerPanelProps) {
     [data, keywords, onChange]
   );
 
-  const showKeywords = triggerType === "keyword" || triggerType === "comment_keyword";
+  const showKeywords = triggerType === "keyword";
   const showPayload = triggerType === "postback" || triggerType === "quick_reply";
 
   return (

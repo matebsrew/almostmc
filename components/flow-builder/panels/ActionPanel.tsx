@@ -20,6 +20,8 @@ interface ActionPanelData {
   flowId?: string;
   returnAfter?: boolean;
   message?: string;
+  text?: string;
+  imageUrl?: string;
   paths?: Array<{ name: string; weight: number }>;
   timeout?: number;
   timeoutUnit?: string;
@@ -57,6 +59,9 @@ export function ActionPanel({ data: rawData, onChange }: ActionPanelProps) {
       return <SubscribeConfig data={data} onChange={onChange} />;
     case "humanTakeover":
       return <HumanTakeoverConfig data={data} onChange={onChange} />;
+    case "commentReply":
+    case "privateReply":
+      return <CommentReplyConfig data={data} onChange={onChange} />;
     case "abSplit":
       return <ABSplitConfig data={data} onChange={onChange} />;
     case "smartDelay":
@@ -379,6 +384,63 @@ function HumanTakeoverConfig({ data, onChange }: ActionSubPanelProps) {
           This message will be visible to agents as an internal note.
         </p>
       </div>
+    </div>
+  );
+}
+
+/* ───────── Comment Reply / Private Reply Config ───────── */
+function CommentReplyConfig({ data, onChange }: ActionSubPanelProps) {
+  const isPrivate = data.actionType === "privateReply";
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border bg-muted p-4">
+        <p className="text-sm font-medium text-foreground">
+          {isPrivate ? "Private reply to commenter" : "Public comment reply"}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {isPrivate
+            ? "Use this as the first message after a comment trigger. It opens the DM conversation so normal Send Message blocks can continue afterwards."
+            : "Reply publicly to the comment that started this flow."}
+        </p>
+      </div>
+
+      <div>
+        <label className="mb-2 block text-xs font-semibold text-foreground">
+          Message
+        </label>
+        <textarea
+          value={data.text || ""}
+          onChange={(e) => onChange({ ...data, text: e.target.value })}
+          placeholder={
+            isPrivate
+              ? "Hey! Here are the details you asked for..."
+              : "Done! Check your DMs."
+          }
+          rows={4}
+          className="w-full resize-none rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+        />
+        <p className="mt-1.5 text-[11px] text-muted-foreground/60">
+          Variables like {"{{comment_text}}"} and {"{{comment_author_name}}"} are available.
+        </p>
+      </div>
+
+      {isPrivate && (
+        <div>
+          <label className="mb-2 block text-xs font-semibold text-foreground">
+            Image URL <span className="font-normal text-muted-foreground">(optional)</span>
+          </label>
+          <input
+            type="url"
+            value={data.imageUrl || ""}
+            onChange={(e) =>
+              onChange({ ...data, imageUrl: e.target.value || undefined })
+            }
+            placeholder="https://..."
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect } from "react";
-import { X, Trash2, Zap, MessageSquare, GitBranch, Clock, Cog, Sparkles } from "lucide-react";
+import { X, Trash2, Zap, MessageSquare, GitBranch, Clock, Cog, Sparkles, Copy, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Node } from "@xyflow/react";
 
@@ -17,6 +17,8 @@ interface NodeConfigSidebarProps {
   onChange: (nodeId: string, data: Record<string, unknown>) => void;
   onClose: () => void;
   onDelete: (nodeId: string) => void;
+  onDuplicate: (nodeId: string) => void;
+  onAddNext: (nodeId: string) => void;
 }
 
 const nodeTypeConfig: Record<string, { label: string; icon: typeof Cog; color: string; borderColor: string }> = {
@@ -58,7 +60,7 @@ const nodeTypeConfig: Record<string, { label: string; icon: typeof Cog; color: s
   },
 };
 
-export function NodeConfigSidebar({ node, onChange, onClose, onDelete }: NodeConfigSidebarProps) {
+export function NodeConfigSidebar({ node, onChange, onClose, onDelete, onDuplicate, onAddNext }: NodeConfigSidebarProps) {
   const nodeType = node.type || "action";
   const config = nodeTypeConfig[nodeType] || nodeTypeConfig.action;
   const Icon = config.icon;
@@ -136,6 +138,22 @@ export function NodeConfigSidebar({ node, onChange, onClose, onDelete }: NodeCon
         <div className="flex items-center gap-1">
           <button
             type="button"
+            onClick={() => onAddNext(node.id)}
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+            title="Add next step"
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onDuplicate(node.id)}
+            className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Duplicate node"
+          >
+            <Copy className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => onDelete(node.id)}
             className="rounded-lg p-1.5 text-muted-foreground/60 hover:bg-red-50 dark:hover:bg-red-950 hover:text-red-500"
             title="Delete node"
@@ -146,6 +164,7 @@ export function NodeConfigSidebar({ node, onChange, onClose, onDelete }: NodeCon
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-muted-foreground/60 hover:bg-muted hover:text-muted-foreground"
+            title="Close"
           >
             <X className="h-4 w-4" />
           </button>
@@ -164,6 +183,17 @@ export function NodeConfigSidebar({ node, onChange, onClose, onDelete }: NodeCon
           placeholder={config.label}
           className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/60 focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
         />
+      </div>
+
+      <div className="border-b border-border px-4 py-3">
+        <button
+          type="button"
+          onClick={() => onAddNext(node.id)}
+          className="flex w-full items-center justify-center gap-2 rounded-lg border border-dashed border-primary/40 bg-primary/5 px-3 py-2 text-xs font-semibold text-primary transition hover:bg-primary/10"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add next step
+        </button>
       </div>
 
       {/* Panel Content */}
