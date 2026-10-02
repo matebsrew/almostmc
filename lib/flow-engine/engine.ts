@@ -757,8 +757,25 @@ async function executeCommentReply(
       path: { postId },
       body: { accountId: lateAccountId, message: text, commentId },
     });
+
+    const commentLogId = context.variables?.comment_log_id;
+    if (commentLogId) {
+      await supabase
+        .from("comment_logs")
+        .update({ reply_sent: true })
+        .eq("id", commentLogId)
+        .eq("workspace_id", context.workspaceId);
+    }
   } catch (error) {
     console.error("Failed to post comment reply:", error);
+    const commentLogId = context.variables?.comment_log_id;
+    if (commentLogId) {
+      await supabase
+        .from("comment_logs")
+        .update({ error: "Public reply failed" })
+        .eq("id", commentLogId)
+        .eq("workspace_id", context.workspaceId);
+    }
   }
 }
 
@@ -806,6 +823,8 @@ async function executePrivateReply(
       body: { accountId: lateAccountId, message: text },
     });
 
+    const sentAt = new Date().toISOString();
+
     await supabase.from("messages").insert({
       conversation_id: context.conversationId,
       direction: "outbound",
@@ -815,7 +834,27 @@ async function executePrivateReply(
         : null,
       sent_by_flow_id: context.flowId,
       status: "sent",
+      created_at: sentAt,
     });
+
+    await supabase
+      .from("conversations")
+      .update({
+        last_message_at: sentAt,
+        last_message_preview: text.slice(0, 200),
+        status: "open",
+      })
+      .eq("id", context.conversationId)
+      .eq("workspace_id", context.workspaceId);
+
+    const commentLogId = context.variables?.comment_log_id;
+    if (commentLogId) {
+      await supabase
+        .from("comment_logs")
+        .update({ dm_sent: true })
+        .eq("id", commentLogId)
+        .eq("workspace_id", context.workspaceId);
+    }
   } catch (error) {
     console.error("Failed to send private reply:", error);
     await supabase.from("messages").insert({
@@ -825,6 +864,15 @@ async function executePrivateReply(
       sent_by_flow_id: context.flowId,
       status: "failed",
     });
+
+    const commentLogId = context.variables?.comment_log_id;
+    if (commentLogId) {
+      await supabase
+        .from("comment_logs")
+        .update({ error: "Private reply failed" })
+        .eq("id", commentLogId)
+        .eq("workspace_id", context.workspaceId);
+    }
   }
 }
 
