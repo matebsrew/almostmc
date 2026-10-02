@@ -403,6 +403,10 @@ export function GrowthView({
                     </option>
                   ))}
                 </select>
+                <p className="mt-1 text-[11px] text-muted-foreground/60">
+                  For a new commenter, start this flow with a Private Reply node.
+                  A normal Send Message needs an existing DM conversation.
+                </p>
               </div>
 
               {/* Keywords */}
