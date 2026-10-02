@@ -43,7 +43,7 @@ export const paletteCategories: PaletteCategory[] = [
         type: "trigger",
         nodeType: "trigger",
         label: "Keyword Trigger",
-        description: "Start when a message or comment matches a rule",
+        description: "Start when an incoming message matches a rule",
         icon: Zap,
       },
     ],
