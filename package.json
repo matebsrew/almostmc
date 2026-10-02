@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "test": "node --test tests/security-regressions.test.mjs tests/migration-security.test.mjs",
+    "test": "node --test tests/security-regressions.test.mjs tests/migration-security.test.mjs tests/flow-builder-ux.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
