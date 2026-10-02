@@ -44,3 +44,13 @@ test("flow palette supports search and click-to-add", async () => {
   assert.equal(/onClick=\{\(\) => onAdd\?\.\(item\)\}/.test(palette), true);
   assert.equal(/Click to add or drag/.test(palette), true);
 });
+
+
+test("live flow execution reads published snapshots instead of autosaved draft nodes", async () => {
+  const engine = await source("lib/flow-engine/engine.ts");
+
+  assert.equal(/loadPublishedFlowGraph/.test(engine), true);
+  assert.equal(/from\("flow_versions"\)/.test(engine), true);
+  assert.equal(/eq\("version", flow\.version\)/.test(engine), true);
+  assert.equal(/Draft edits saved by the builder/.test(engine), true);
+});
