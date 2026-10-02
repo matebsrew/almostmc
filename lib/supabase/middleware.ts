@@ -34,7 +34,8 @@ export async function updateSession(request: NextRequest) {
   const isSelfAuthenticatedApi =
     pathname === "/api/webhooks/late" ||
     pathname === "/api/cron/jobs" ||
-    pathname === "/api/cron/sequences";
+    pathname === "/api/cron/sequences" ||
+    pathname === "/api/cron/webhooks";
 
   if (isAuthCallback || isSelfAuthenticatedApi) return supabaseResponse;
 
