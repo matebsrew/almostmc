@@ -93,3 +93,75 @@ export async function matchTrigger(
   const defaultTrigger = triggers.find((t) => t.type === "default");
   return defaultTrigger || null;
 }
+
+
+interface IncomingComment {
+  text: string;
+  /** Both Zernio's internal post id and the platform-native post id when available. */
+  postIds: string[];
+}
+
+/**
+ * Match a comment.received event against Growth Tools comment_keyword rules.
+ * The workspace filter matters because global triggers have channel_id = null.
+ */
+export async function matchCommentTrigger(
+  supabase: SupabaseClient<Database>,
+  channelId: string,
+  workspaceId: string,
+  comment: IncomingComment
+): Promise<Trigger | null> {
+  const { data: triggers } = await supabase
+    .from("triggers")
+    .select("*, flows!inner(status, workspace_id)")
+    .or(`channel_id.eq.${channelId},channel_id.is.null`)
+    .eq("type", "comment_keyword")
+    .eq("is_active", true)
+    .eq("flows.status", "published")
+    .eq("flows.workspace_id", workspaceId)
+    .order("priority", { ascending: false });
+
+  if (!triggers?.length) return null;
+
+  const text = comment.text.toLowerCase().trim();
+  const receivedPostIds = new Set(comment.postIds.filter(Boolean));
+
+  for (const trigger of triggers) {
+    const config = trigger.config as {
+      keywords?: Array<
+        string | {
+          value: string;
+          matchType?: "exact" | "contains" | "startsWith";
+        }
+      >;
+      matchType?: "exact" | "contains" | "startsWith";
+      postIds?: string[];
+    };
+
+    const restrictedPostIds = (config.postIds ?? []).filter(Boolean);
+    if (
+      restrictedPostIds.length > 0 &&
+      !restrictedPostIds.some((postId) => receivedPostIds.has(postId))
+    ) {
+      continue;
+    }
+
+    for (const entry of config.keywords ?? []) {
+      const keyword = (typeof entry === "string" ? entry : entry.value)
+        .toLowerCase()
+        .trim();
+      if (!keyword) continue;
+
+      const matchType =
+        (typeof entry === "object" && entry.matchType) ||
+        config.matchType ||
+        "contains";
+
+      if (matchType === "exact" && text === keyword) return trigger;
+      if (matchType === "contains" && text.includes(keyword)) return trigger;
+      if (matchType === "startsWith" && text.startsWith(keyword)) return trigger;
+    }
+  }
+
+  return null;
+}
